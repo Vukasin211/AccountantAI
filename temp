@@ -1,0 +1,636 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from sklearn.preprocessing import StandardScaler
+
+
+# Load your dataset from the uploaded CSV
+df = pd.read_csv("expenses.csv")  # replace with your filename
+
+# Assume your dataset has a column called 'type' or 'transaction_type'
+# that says 'income' or 'expense'
+expenses = df[df['Type'] == 'Expense'].copy()
+
+# Only keep the columns we need for LSTM: date and amount
+expenses = expenses[['Date', 'Amount']]
+
+# Optional: sort by date just in case
+expenses['Date'] = pd.to_datetime(expenses['Date'])
+expenses = expenses.sort_values('Date')
+expenses.reset_index(drop=True, inplace=True)
+
+# LSTM works better with scaled numbers (between 0 and 1)
+scaler = StandardScaler()
+expenses['amount_scaled'] = scaler.fit_transform(expenses[['Amount']])
+
+# Define how many past points to look at
+window_size = 15  # for example, last 5 expenses to predict next
+
+X = []  # input sequences
+y = []  # next value to predict
+
+amounts = expenses['amount_scaled'].values
+
+for i in range(window_size, len(amounts)):
+    X.append(amounts[i-window_size:i])  # past 5 points
+    y.append(amounts[i])                # next point
+
+# Convert to numpy arrays
+X = np.array(X)
+y = np.array(y)
+
+# Reshape X to 3D for LSTM: (samples, timesteps, features)
+X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+
+model = Sequential()
+model.add(LSTM(50, activation='relu', input_shape=(X.shape[1], X.shape[2])))
+model.add(Dense(1))  # predict next amount
+model.compile(optimizer='adam', loss='mse')  # mean squared error
+
+# Train the model
+history = model.fit(X, y, epochs=50, batch_size=8, verbose=1)
+
+# Predict for all sequences
+predictions = model.predict(X)
+
+# Inverse transform to get original amounts
+predicted_amounts = scaler.inverse_transform(predictions)
+real_amounts = scaler.inverse_transform(y.reshape(-1, 1))
+
+# Define your accuracy threshold (5% difference)
+threshold = 0.10  # 5%
+
+# Calculate absolute percentage difference for each prediction
+diff_percentages = np.abs((real_amounts - predicted_amounts) / real_amounts)
+
+# Count how many are within the threshold
+correct_count = np.sum(diff_percentages <= threshold)
+total_count = len(diff_percentages)
+
+# Calculate percentage
+accuracy_percent = (correct_count / total_count) * 100
+
+print(f"✅ Prediction accuracy: {accuracy_percent:.2f}% (within ±{threshold*100:.0f}% error margin)")
+
+
+model.save("lstm_expense_model.h5")
+# Later you can load it using: from tensorflow.keras.models import load_model
+
+# Let's plot the last N predictions for clarity
+N = 100  # number of data points to plot (adjust as you like)
+
+plt.figure(figsize=(12, 6))
+plt.plot(real_amounts[-N:], label='Real Expenses', color='blue')
+plt.plot(predicted_amounts[-N:], label='Predicted Expenses', color='red', linestyle='dashed')
+
+plt.title('Real vs Predicted Expenses')
+plt.xlabel('Time Steps')
+plt.ylabel('Expense Amount')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+#Prvi nacin postize efikasnost od 13% u najboljem trenutnku
+#Drugi model ispod postize efikasnost od 25%
+
+# =======================
+# 1️⃣ IMPORT LIBRARIES
+# =======================
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.models import load_model
+
+# =======================
+# 2️⃣ LOAD AND CLEAN DATA
+# =======================
+
+# Load your dataset from the uploaded CSV
+df = pd.read_csv("expenses.csv")  # replace with your filename
+
+# Filter only expense rows (ignore incomes)
+expenses = df[df['Type'] == 'Expense'].copy()
+
+# Keep only Date and Amount columns
+expenses = expenses[['Date', 'Amount']]
+
+# Sort by date and reset index
+expenses['Date'] = pd.to_datetime(expenses['Date'])
+expenses = expenses.sort_values('Date').reset_index(drop=True)
+
+# =======================
+# 3️⃣ SCALE DATA
+# =======================
+# LSTM works better with normalized/scaled data
+scaler = StandardScaler()
+expenses['amount_scaled'] = scaler.fit_transform(expenses[['Amount']])
+
+# =======================
+# 4️⃣ SPLIT INTO LOW/MID/HIGH EXPENSE RANGES
+# =======================
+# Calculate thresholds for different spending levels
+low_th = expenses['Amount'].quantile(0.33)
+high_th = expenses['Amount'].quantile(0.66)
+
+# Create subsets for each spending level
+low_data = expenses[expenses['Amount'] <= low_th]
+mid_data = expenses[(expenses['Amount'] > low_th) & (expenses['Amount'] <= high_th)]
+high_data = expenses[expenses['Amount'] > high_th]
+
+# Helper function to prepare input/output data for an LSTM model
+def prepare_sequences(data, window_size=15):
+    amounts = data['amount_scaled'].values
+    X, y = [], []
+    for i in range(window_size, len(amounts)):
+        X.append(amounts[i-window_size:i])
+        y.append(amounts[i])
+    X = np.array(X)
+    y = np.array(y)
+    X = np.reshape(X, (X.shape[0], X.shape[1], 1))  # reshape for LSTM
+    return X, y
+
+# =======================
+# 5️⃣ DEFINE LSTM MODEL CREATION FUNCTION
+# =======================
+def create_lstm_model(input_shape):
+    model = Sequential()
+    model.add(LSTM(50, activation='relu', input_shape=input_shape))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+# =======================
+# 6️⃣ TRAIN 3 SPECIALIZED MODELS
+# =======================
+models = {}
+for label, dataset in zip(['low', 'mid', 'high'], [low_data, mid_data, high_data]):
+    if len(dataset) > 30:  # make sure we have enough data
+        X, y = prepare_sequences(dataset)
+        model = create_lstm_model((X.shape[1], X.shape[2]))
+        print(f"\n🚀 Training {label.upper()} expense model...")
+        model.fit(X, y, epochs=50, batch_size=8, verbose=1)
+        models[label] = (model, X, y)
+    else:
+        print(f"⚠️ Not enough data for {label} range!")
+
+# =======================
+# 7️⃣ PREDICT WITH RULE-BASED SELECTOR
+# =======================
+# Combine data back in chronological order for prediction
+X_all, y_all = prepare_sequences(expenses)
+predictions_combined = []
+
+# Predict for each data point using correct specialized model
+for i in range(len(y_all)):
+    # Determine which range the *previous real value* belongs to
+    last_real_value = scaler.inverse_transform(y_all[i].reshape(-1, 1))[0][0]
+    if last_real_value <= low_th and 'low' in models:
+        model = models['low'][0]
+    elif last_real_value <= high_th and 'mid' in models:
+        model = models['mid'][0]
+    elif 'high' in models:
+        model = models['high'][0]
+    else:
+        continue
+
+    pred = model.predict(X_all[i].reshape(1, X_all.shape[1], 1), verbose=0)
+    predictions_combined.append(pred[0][0])
+
+# =======================
+# 8️⃣ CALCULATE ACCURACY AND ERROR
+# =======================
+predicted_amounts = scaler.inverse_transform(np.array(predictions_combined).reshape(-1, 1))
+real_amounts = scaler.inverse_transform(y_all[:len(predicted_amounts)].reshape(-1, 1))
+
+# Calculate % difference between predicted and real
+diff_percentages = np.abs((real_amounts - predicted_amounts) / real_amounts)
+threshold = 0.10  # 10% margin
+correct_count = np.sum(diff_percentages <= threshold)
+total_count = len(diff_percentages)
+accuracy_percent = (correct_count / total_count) * 100
+
+print(f"\n✅ Overall multi-model accuracy: {accuracy_percent:.2f}% (within ±{threshold*100:.0f}% margin)")
+
+# =======================
+# 9️⃣ VISUALIZE RESULTS
+# =======================
+N = 100  # number of last data points to plot
+plt.figure(figsize=(12, 6))
+plt.plot(real_amounts[-N:], label='Real Expenses', color='blue')
+plt.plot(predicted_amounts[-N:], label='Predicted Expenses', color='red', linestyle='dashed')
+plt.title('Real vs Predicted Expenses (Multi-Model LSTM)')
+plt.xlabel('Time Steps')
+plt.ylabel('Expense Amount')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# =======================
+# 🔟 SAVE MODELS
+# =======================
+for label, (model, _, _) in models.items():
+    model.save(f"lstm_expense_model_{label}.h5")
+    print(f"💾 Saved model for {label} spending range.")
+
+#najbolji model do sat 29% tacnosti
+# =======================
+# 1️⃣ IMPORT LIBRARIES
+# =======================
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import LSTM, Dense
+import os
+
+# =======================
+# 2️⃣ LOAD AND CLEAN DATA
+# =======================
+df = pd.read_csv("expenses.csv")  # replace with your filename
+
+# Filter only expenses
+expenses = df[df['Type'] == 'Expense'].copy()
+expenses = expenses[['Date', 'Amount']]
+expenses['Date'] = pd.to_datetime(expenses['Date'])
+expenses = expenses.sort_values('Date').reset_index(drop=True)
+
+# =======================
+# 3️⃣ SCALE DATA
+# =======================
+scaler = StandardScaler()
+expenses['amount_scaled'] = scaler.fit_transform(expenses[['Amount']])
+
+# =======================
+# 4️⃣ SPLIT INTO LOW/MID/HIGH EXPENSE RANGES
+# =======================
+low_th = expenses['Amount'].quantile(0.33)
+high_th = expenses['Amount'].quantile(0.66)
+
+low_data = expenses[expenses['Amount'] <= low_th]
+mid_data = expenses[(expenses['Amount'] > low_th) & (expenses['Amount'] <= high_th)]
+high_data = expenses[expenses['Amount'] > high_th]
+
+# =======================
+# 5️⃣ HELPER FUNCTIONS
+# =======================
+def prepare_sequences(data, window_size=10):
+    """Prepare sequences for LSTM"""
+    amounts = data['amount_scaled'].values
+    X, y = [], []
+    for i in range(window_size, len(amounts)):
+        X.append(amounts[i-window_size:i])
+        y.append(amounts[i])
+    X = np.array(X)
+    y = np.array(y)
+    X = X.reshape((X.shape[0], X.shape[1], 1))
+    return X, y
+
+def create_lstm_model(input_shape):
+    model = Sequential()
+    model.add(LSTM(50, activation='relu', input_shape=input_shape))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+def model_accuracy(y_true, y_pred, threshold=0.10):
+    diff = np.abs((y_true - y_pred) / y_true)
+    return np.sum(diff <= threshold) / len(diff) * 100
+
+# =======================
+# 6️⃣ TRAIN OR LOAD MODELS
+# =======================
+models = {}
+window_size = 11
+model_labels = ['low', 'mid', 'high']
+data_dict = {'low': low_data, 'mid': mid_data, 'high': high_data}
+
+for label in model_labels:
+    model_file = f"lstm_expense_model_{label}.h5"
+    dataset = data_dict[label]
+    if os.path.exists(model_file):
+        print(f"📂 Loading existing {label} model...")
+        model = load_model(model_file, compile=False)
+        X, y = prepare_sequences(dataset, window_size)
+        models[label] = (model, X, y)
+    else:
+        if len(dataset) > window_size + 1:
+            print(f"\n🚀 Training new {label} model...")
+            X, y = prepare_sequences(dataset, window_size)
+            model = create_lstm_model((X.shape[1], X.shape[2]))
+            model.fit(X, y, epochs=50, batch_size=8, verbose=1)
+            model.save(model_file)
+            models[label] = (model, X, y)
+            print(f"💾 Saved new {label} model.")
+        else:
+            print(f"⚠️ Not enough data to train {label} model!")
+
+# =======================
+# 7️⃣ PREDICTION
+# =======================
+X_all, y_all = prepare_sequences(expenses, window_size)
+predictions_combined = []
+
+for i in range(len(y_all)):
+    last_real_value = scaler.inverse_transform(y_all[i].reshape(-1, 1))[0][0]
+    if last_real_value <= low_th and 'low' in models:
+        model = models['low'][0]
+    elif last_real_value <= high_th and 'mid' in models:
+        model = models['mid'][0]
+    elif 'high' in models:
+        model = models['high'][0]
+    else:
+        continue
+
+    pred = model.predict(X_all[i].reshape(1, window_size, 1), verbose=0)
+    predictions_combined.append(pred[0][0])
+
+# =======================
+# 8️⃣ CALCULATE ACCURACY
+# =======================
+predicted_amounts = scaler.inverse_transform(np.array(predictions_combined).reshape(-1, 1))
+real_amounts = scaler.inverse_transform(y_all[:len(predicted_amounts)].reshape(-1, 1))
+
+diff_percentages = np.abs((real_amounts - predicted_amounts) / real_amounts)
+threshold = 0.10
+correct_count = np.sum(diff_percentages <= threshold)
+total_count = len(diff_percentages)
+accuracy_percent = (correct_count / total_count) * 100
+
+print(f"\n✅ Overall multi-model accuracy: {accuracy_percent:.2f}% (±{threshold*100:.0f}% margin)")
+
+# =======================
+# 9️⃣ VISUALIZE RESULTS
+# =======================
+N = 100
+plt.figure(figsize=(12, 6))
+plt.plot(real_amounts[-N:], label='Real Expenses', color='blue')
+plt.plot(predicted_amounts[-N:], label='Predicted Expenses', color='red', linestyle='dashed')
+plt.title('Real vs Predicted Expenses (Multi-Model LSTM)')
+plt.xlabel('Time Steps')
+plt.ylabel('Expense Amount')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# =======================
+# 🔟 SAVE MODELS
+# =======================
+for label, (model, _, _) in models.items():
+    model.save(f"lstm_expense_model_{label}.h5")
+    print(f"💾 Saved model for {label} spending range.")
+
+# =======================
+# 1️⃣1️⃣ AUTO-REBALANCING SYSTEM
+# =======================
+print("\n📊 Checking accuracy per model before rebalancing...")
+model_accuracies = {}
+
+for label, (model, X, y) in models.items():
+    preds = model.predict(X, verbose=0)
+    preds_inv = scaler.inverse_transform(preds)
+    y_inv = scaler.inverse_transform(y.reshape(-1,1))
+    acc = model_accuracy(y_inv, preds_inv)
+    model_accuracies[label] = acc
+    print(f" - {label.capitalize()} model accuracy: {acc:.2f}%")
+
+# Retrain models below threshold
+retrain_threshold = 20
+for label, acc in model_accuracies.items():
+    if acc < retrain_threshold:
+        print(f"\n⚙️ Retraining '{label}' model (accuracy {acc:.1f}% < {retrain_threshold}%)...")
+        _, X, y = models[label]
+        new_model = create_lstm_model((X.shape[1], X.shape[2]))
+        new_model.fit(X, y, epochs=150, batch_size=8, verbose=0)
+        models[label] = (new_model, X, y)
+        new_model.save(f"lstm_expense_model_{label}.h5")
+        print(f"✅ '{label}' model retrained and saved.")
+
+# Optional: adjust thresholds if distribution shifts
+expense_counts = {'low': len(low_data), 'mid': len(mid_data), 'high': len(high_data)}
+total = sum(expense_counts.values())
+ratios = {k: v / total for k, v in expense_counts.items()}
+
+if ratios['high'] > 0.5:
+    print("\n📈 Adjusting spending range thresholds (too many 'high' expenses)...")
+    low_th = expenses['Amount'].quantile(0.25)
+    high_th = expenses['Amount'].quantile(0.75)
+    print(f"New thresholds: low ≤ {low_th:.2f}, high ≥ {high_th:.2f}")
+
+print("\n✅ Auto-rebalancing complete.")
+
+#Poslednje
+# =======================
+# 1️⃣ IMPORT LIBRARIES
+# =======================
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import LSTM, Dense
+import os
+
+# =======================
+# 2️⃣ LOAD AND CLEAN DATA
+# =======================
+df = pd.read_csv("expenses.csv")  # replace with your filename
+
+# Filter only expenses
+expenses = df[df['Type'] == 'Expense'].copy()
+expenses = expenses[['Date', 'Amount']]
+expenses['Date'] = pd.to_datetime(expenses['Date'])
+expenses = expenses.sort_values('Date').reset_index(drop=True)
+
+# =======================
+# 3️⃣ SCALE DATA
+# =======================
+scaler = StandardScaler()
+expenses['amount_scaled'] = scaler.fit_transform(expenses[['Amount']])
+
+# =======================
+# 4️⃣ SPLIT INTO LOW/MID/HIGH EXPENSE RANGES
+# =======================
+low_th = expenses['Amount'].quantile(0.33)
+high_th = expenses['Amount'].quantile(0.66)
+
+low_data = expenses[expenses['Amount'] <= low_th]
+mid_data = expenses[(expenses['Amount'] > low_th) & (expenses['Amount'] <= high_th)]
+high_data = expenses[expenses['Amount'] > high_th]
+
+# =======================
+# 5️⃣ HELPER FUNCTIONS
+# =======================
+def prepare_sequences(data, window_size=10):
+    """Prepare sequences for LSTM"""
+    amounts = data['amount_scaled'].values
+    X, y = [], []
+    for i in range(window_size, len(amounts)):
+        X.append(amounts[i-window_size:i])
+        y.append(amounts[i])
+    X = np.array(X)
+    y = np.array(y)
+    X = X.reshape((X.shape[0], X.shape[1], 1))
+    return X, y
+
+def create_lstm_model(input_shape):
+    model = Sequential()
+    model.add(LSTM(50, activation='relu', input_shape=input_shape))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+def model_accuracy(y_true, y_pred, threshold=0.10):
+    diff = np.abs((y_true - y_pred) / y_true)
+    return np.sum(diff <= threshold) / len(diff) * 100
+
+# =======================
+# 6️⃣ TRAIN OR LOAD MODELS
+# =======================
+models = {}
+window_size = 11
+model_labels = ['low', 'mid', 'high']
+data_dict = {'low': low_data, 'mid': mid_data, 'high': high_data}
+
+for label in model_labels:
+    model_file = f"lstm_expense_model_{label}.h5"
+    dataset = data_dict[label]
+    if os.path.exists(model_file):
+        print(f"📂 Loading existing {label} model...")
+        model = load_model(model_file, compile=False)
+        X, y = prepare_sequences(dataset, window_size)
+        models[label] = (model, X, y)
+    else:
+        if len(dataset) > window_size + 1:
+            print(f"\n🚀 Training new {label} model...")
+            X, y = prepare_sequences(dataset, window_size)
+            model = create_lstm_model((X.shape[1], X.shape[2]))
+            model.fit(X, y, epochs=50, batch_size=8, verbose=1)
+            model.save(model_file)
+            models[label] = (model, X, y)
+            print(f"💾 Saved new {label} model.")
+        else:
+            print(f"⚠️ Not enough data to train {label} model!")
+
+# =======================
+# 7️⃣ PREDICTION
+# =======================
+X_all, y_all = prepare_sequences(expenses, window_size)
+predictions_combined = []
+
+for i in range(len(y_all)):
+    last_real_value = scaler.inverse_transform(y_all[i].reshape(-1, 1))[0][0]
+    if last_real_value <= low_th and 'low' in models:
+        model = models['low'][0]
+    elif last_real_value <= high_th and 'mid' in models:
+        model = models['mid'][0]
+    elif 'high' in models:
+        model = models['high'][0]
+    else:
+        continue
+
+    pred = model.predict(X_all[i].reshape(1, window_size, 1), verbose=0)
+    predictions_combined.append(pred[0][0])
+
+# =======================
+# 8️⃣ CALCULATE ACCURACY (±30% THRESHOLD)
+# =======================
+predicted_amounts = scaler.inverse_transform(np.array(predictions_combined).reshape(-1, 1))
+real_amounts = scaler.inverse_transform(y_all[:len(predicted_amounts)].reshape(-1, 1))
+
+threshold = 0.30  # 30% margin
+correct_mask = np.abs(predicted_amounts - real_amounts) / real_amounts <= threshold
+
+correct_count = np.sum(correct_mask)
+total_count = len(correct_mask)
+accuracy_percent = (correct_count / total_count) * 100
+
+print(f"\n✅ Overall accuracy (±{threshold*100:.0f}% margin): {accuracy_percent:.2f}%")
+
+# =======================
+# 9️⃣ VISUALIZE RESULTS (USE OVERALL ACCURACY FROM 8️⃣)
+# =======================
+N = 100  # number of last data points to plot
+
+# Slice last N points for plotting lines
+pred_slice = predicted_amounts[-N:]
+real_slice = real_amounts[-N:]
+correct_slice = correct_mask[-N:]  # still needed for shading
+
+plt.figure(figsize=(12, 6))
+
+# Plot real and predicted expenses
+plt.plot(real_slice, label='Real Expenses', color='blue')
+plt.plot(pred_slice, label='Predicted Expenses', color='red', linestyle='dashed')
+
+# Shade background for correct/incorrect predictions
+for i in range(N):
+    if correct_slice[i]:
+        plt.axvspan(i-0.5, i+0.5, color='green', alpha=0.1)  # correct
+    else:
+        plt.axvspan(i-0.5, i+0.5, color='red', alpha=0.1)    # outside ±30%
+
+# Use overall accuracy from section 8
+plt.text(0.02, 0.95, f'Overall Accuracy (±30%): {accuracy_percent:.2f}%', 
+         transform=plt.gca().transAxes, fontsize=12, 
+         verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
+
+plt.title('Real vs Predicted Expenses (±30% Correctness)')
+plt.xlabel('Time Steps')
+plt.ylabel('Expense Amount')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# =======================
+# 🔟 SAVE MODELS
+# =======================
+for label, (model, _, _) in models.items():
+    model.save(f"lstm_expense_model_{label}.h5")
+    print(f"💾 Saved model for {label} spending range.")
+
+# =======================
+# 1️⃣1️⃣ AUTO-REBALANCING SYSTEM
+# =======================
+print("\n📊 Checking accuracy per model before rebalancing...")
+model_accuracies = {}
+
+for label, (model, X, y) in models.items():
+    preds = model.predict(X, verbose=0)
+    preds_inv = scaler.inverse_transform(preds)
+    y_inv = scaler.inverse_transform(y.reshape(-1,1))
+    acc = model_accuracy(y_inv, preds_inv)
+    model_accuracies[label] = acc
+    print(f" - {label.capitalize()} model accuracy: {acc:.2f}%")
+
+# Retrain models below threshold
+retrain_threshold = 20
+for label, acc in model_accuracies.items():
+    if acc < retrain_threshold:
+        print(f"\n⚙️ Retraining '{label}' model (accuracy {acc:.1f}% < {retrain_threshold}%)...")
+        _, X, y = models[label]
+        new_model = create_lstm_model((X.shape[1], X.shape[2]))
+        new_model.fit(X, y, epochs=150, batch_size=8, verbose=0)
+        models[label] = (new_model, X, y)
+        new_model.save(f"lstm_expense_model_{label}.h5")
+        print(f"✅ '{label}' model retrained and saved.")
+
+# Optional: adjust thresholds if distribution shifts
+expense_counts = {'low': len(low_data), 'mid': len(mid_data), 'high': len(high_data)}
+total = sum(expense_counts.values())
+ratios = {k: v / total for k, v in expense_counts.items()}
+
+if ratios['high'] > 0.5:
+    print("\n📈 Adjusting spending range thresholds (too many 'high' expenses)...")
+    low_th = expenses['Amount'].quantile(0.25)
+    high_th = expenses['Amount'].quantile(0.75)
+    print(f"New thresholds: low ≤ {low_th:.2f}, high ≥ {high_th:.2f}")
+
+print("\n✅ Auto-rebalancing complete.")
+
