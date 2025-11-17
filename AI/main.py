@@ -1,5 +1,3 @@
-# main.py — Rolling walk-forward simulation (7-day window) with 3-model ensemble
-# -------------------------------------------------------------------------------
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -131,9 +129,121 @@ def plot_results(dates, actuals, preds, correct_mask, overall_accuracy):
     buf.seek(0)
     return buf
 
+# -------------------------------
+# Individual Metric Calculation Functions (Single Return)
+# -------------------------------
+
+def get_valid_prediction_pairs(y_pred, y_true):
+    """Filter to only pairs where actual value exists and values are finite"""
+    valid_preds = []
+    valid_actuals = []
+    
+    for pred, actual in zip(y_pred, y_true):
+        if actual is not None and np.isfinite(pred) and np.isfinite(actual):
+            valid_preds.append(pred)
+            valid_actuals.append(actual)
+    
+    return valid_preds, valid_actuals
+
+def get_all_predictions(y_pred, y_true):
+    """Get all predictions regardless of whether actual exists"""
+    all_preds = []
+    all_actuals = []
+    
+    for pred, actual in zip(y_pred, y_true):
+        if np.isfinite(pred):
+            all_preds.append(pred)
+            all_actuals.append(actual)  # actual can be None
+    
+    return all_preds, all_actuals
+
+def calculate_mae_single(y_true, y_pred):
+    """Calculate Mean Absolute Error - returns single float"""
+    valid_preds, valid_actuals = get_valid_prediction_pairs(y_pred, y_true)
+    if len(valid_actuals) == 0:
+        return 0.0
+    try:
+        mae = float(mean_absolute_error(valid_actuals, valid_preds))
+        return mae if np.isfinite(mae) else 0.0
+    except:
+        return 0.0
+
+def calculate_rmse_single(y_true, y_pred):
+    """Calculate Root Mean Squared Error - returns single float"""
+    valid_preds, valid_actuals = get_valid_prediction_pairs(y_pred, y_true)
+    if len(valid_actuals) == 0:
+        return 0.0
+    try:
+        rmse = float(np.sqrt(mean_squared_error(valid_actuals, valid_preds)))
+        return rmse if np.isfinite(rmse) else 0.0
+    except:
+        return 0.0
+
+def calculate_r2_single(y_true, y_pred):
+    """Calculate R² Score - returns single float"""
+    valid_preds, valid_actuals = get_valid_prediction_pairs(y_pred, y_true)
+    if len(valid_actuals) < 2:  # Need at least 2 points for R²
+        return 0.0
+    try:
+        r2 = float(r2_score(valid_actuals, valid_preds))
+        return r2 if np.isfinite(r2) else 0.0
+    except:
+        return 0.0
+
+def calculate_accuracy_percentage_single(y_true, y_pred, threshold=PCT_THRESHOLD):
+    """Calculate accuracy percentage - returns single float"""
+    valid_preds, valid_actuals = get_valid_prediction_pairs(y_pred, y_true)
+    if len(valid_actuals) == 0:
+        return 0.0
+    
+    try:
+        correct_mask = []
+        for pred, actual in zip(valid_preds, valid_actuals):
+            if actual == 0:
+                correct_mask.append(True)
+            else:
+                error_ratio = abs(pred - actual) / actual
+                correct_mask.append(error_ratio <= threshold)
+        
+        correct_count = sum(correct_mask)
+        accuracy = (correct_count / len(valid_actuals) * 100) if len(valid_actuals) > 0 else 0.0
+        return float(accuracy) if np.isfinite(accuracy) else 0.0
+    except:
+        return 0.0
+
+def calculate_correct_predictions_single(y_true, y_pred, threshold=PCT_THRESHOLD):
+    """Calculate number of correct predictions - returns single integer"""
+    valid_preds, valid_actuals = get_valid_prediction_pairs(y_pred, y_true)
+    if len(valid_actuals) == 0:
+        return 0
+    
+    try:
+        correct_mask = []
+        for pred, actual in zip(valid_preds, valid_actuals):
+            if actual == 0:
+                correct_mask.append(True)
+            else:
+                error_ratio = abs(pred - actual) / actual
+                correct_mask.append(error_ratio <= threshold)
+        
+        return int(sum(correct_mask))
+    except:
+        return 0
+
+def calculate_total_predictions_single(y_true, y_pred):
+    """Calculate total valid predictions - returns single integer"""
+    valid_preds, valid_actuals = get_valid_prediction_pairs(y_pred, y_true)
+    return len(valid_actuals)
+
+def calculate_total_all_predictions_single(y_true, y_pred):
+    """Calculate total ALL predictions (including future ones without actuals) - returns single integer"""
+    all_preds, all_actuals = get_all_predictions(y_pred, y_true)
+    return len(all_preds)
+
 # ------------------------
-# 5) API endpoint: /simulate
+# 5) API endpoints
 # ------------------------
+
 @app.post("/simulateTomorrow")
 def simulateTomorrow(currentDateTime: str = Query(..., description="Current date in YYYY-MM-DD format")):
     """
@@ -244,6 +354,131 @@ def simulateTomorrowAuto():
     today = datetime.now().strftime("%Y-%m-%d")
     return simulateTomorrow(today)
 
+@app.post("/simulateData")
+def simulateData(max_days: int = Query(None, description="How many sequential days to simulate")):
+    """
+    Rolling simulation that forces predictions for sequential calendar days.
+    First prediction day = tomorrow from PC date.
+    If the CSV does not contain that date, actual = None.
+    """
+    
+    # Must have enough history
+    if len(amounts_daily) < WINDOW_SIZE:
+        return JSONResponse(
+            {"error": f"Not enough data. Need {WINDOW_SIZE} days."},
+            status_code=400
+        )
+
+    # -------------------------------
+    # 1) Detect today from PC
+    # -------------------------------
+    today = datetime.now().date()
+    first_pred_date = today + timedelta(days=1)
+
+    # If user specifies max_days → limit
+    if max_days is None or max_days <= 0:
+        max_days = 30  # default simulate 30 days
+
+    # -------------------------------
+    # 2) Prepare a lookup dict of real CSV amounts
+    # -------------------------------
+    real_lookup = {
+        d.date(): float(a) for d, a in zip(dates_daily, amounts_daily)
+    }
+
+    # -------------------------------
+    # 3) Start with last WINDOW_SIZE real values
+    # -------------------------------
+    recent_values = list(amounts_daily[-WINDOW_SIZE:])
+    recent_scaled = scale_amounts(recent_values)
+
+    preds, actuals, datelist = [], [], []
+
+    # -------------------------------
+    # 4) Sequential day-by-day prediction loop
+    # -------------------------------
+    for step in range(max_days):
+
+        current_pred_date = first_pred_date + timedelta(days=step)
+        datelist.append(current_pred_date.strftime("%Y-%m-%d"))
+
+        # Select model based on last real known value
+        last_real = recent_values[-1]
+        model_label, model_obj = choose_model_by_value(last_real)
+
+        # Prepare input
+        X = seq_to_model_input(recent_scaled)
+        pred_scaled = float(model_obj.predict(X, verbose=0)[0][0])
+        pred_amount = inverse_amount(pred_scaled)
+
+        # Ensure prediction is finite
+        if not np.isfinite(pred_amount):
+            pred_amount = 0.0
+
+        preds.append(pred_amount)
+
+        # Check if this date exists in real CSV
+        actual = real_lookup.get(current_pred_date, None)
+        actuals.append(actual)
+
+        # If real data exists → use real value in window
+        if actual is not None:
+            next_val = actual
+        else:
+            # No real data → treat prediction as next known history
+            next_val = pred_amount
+
+        # Update rolling window
+        recent_values.append(next_val)
+        recent_values = recent_values[-WINDOW_SIZE:]
+        recent_scaled = scale_amounts(recent_values)
+
+    # -------------------------------
+    # 5) Build JSON response using individual metric functions
+    # -------------------------------
+    results = []
+    
+    for d, p, a in zip(datelist, preds, actuals):
+        if a is not None:
+            within = abs(p - a) / a <= PCT_THRESHOLD if a != 0 else True
+        else:
+            within = None
+
+        results.append({
+            "date": d,
+            "predicted": round(p, 2),
+            "actual": round(a, 2) if a is not None else None,
+            "within_threshold": within
+        })
+
+    # CALCULATE EACH METRIC USING INDIVIDUAL FUNCTIONS
+    mae = calculate_mae_single(actuals, preds)
+    rmse = calculate_rmse_single(actuals, preds)
+    r2 = calculate_r2_single(actuals, preds)
+    accuracy_pct = calculate_accuracy_percentage_single(actuals, preds)
+    correct_count = calculate_correct_predictions_single(actuals, preds)
+    
+    # Use the NEW function that counts ALL predictions, not just validated ones
+    total_count = calculate_total_all_predictions_single(actuals, preds)
+
+    # Ensure all metrics are JSON serializable
+    response_data = {
+        "auto_detected_today": today.strftime("%Y-%m-%d"),
+        "simulation_start_day": first_pred_date.strftime("%Y-%m-%d"),
+        "overall_metrics": {
+            "mean_absolute_error": float(mae) if np.isfinite(mae) else 0.0,
+            "root_mean_squared_error": float(rmse) if np.isfinite(rmse) else 0.0,
+            "r2_score": float(r2) if np.isfinite(r2) else 0.0,
+            "accuracy_percentage": float(accuracy_pct) if np.isfinite(accuracy_pct) else 0.0,
+            "correct_predictions": int(correct_count),
+            "total_predictions": int(total_count),
+            "threshold": f"±{int(PCT_THRESHOLD*100)}%"
+        },
+        "predictions": results
+    }
+    
+    return response_data
+
 @app.post("/simulate")
 def simulate(max_days: int = Query(None, description="Limit how many days to simulate (default = all)")):
     if len(amounts_daily) < WINDOW_SIZE + 1:
@@ -291,9 +526,19 @@ def root():
     return {
         "message": "Rolling simulation ready.",
         "endpoints": {
-            "simulate": "POST /simulate (optional query param max_days)",
-            "simulateTomorrow": "POST /simulateTomorrow?currentDateTime=YYYY-MM-DD",
-            "simulateTomorrowAuto": "POST /simulateTomorrowAuto (uses today's date automatically)"
+            "simulate": "POST /simulate (optional query param max_days) - returns PNG plot",
+            "simulateData": "POST /simulateData (optional query param max_days) - returns JSON data", 
+            "simulateTomorrow": "POST /simulateTomorrow?currentDateTime=YYYY-MM-DD - predict tomorrow",
+            "simulateTomorrowAuto": "POST /simulateTomorrowAuto - predict tomorrow using today's date"
         },
-        "notes": "Simulation aggregates multiple transactions per day into daily totals."
+        "notes": "Simulation aggregates multiple transactions per day into daily totals.",
+        "current_data_stats": {
+            "total_days": len(amounts_daily),
+            "date_range": {
+                "start": dates_daily[0].strftime("%Y-%m-%d") if dates_daily else "No data",
+                "end": dates_daily[-1].strftime("%Y-%m-%d") if dates_daily else "No data"
+            },
+            "window_size": WINDOW_SIZE,
+            "accuracy_threshold": f"±{int(PCT_THRESHOLD*100)}%"
+        }
     }
