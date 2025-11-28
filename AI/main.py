@@ -31,8 +31,8 @@ app.add_middleware(
 # ------------------------
 # 2) Config
 # ------------------------
-CSV_FILE = "expenses4.csv"         
-WINDOW_SIZE = 11                    
+CSV_FILE = "expenses5.csv"         
+WINDOW_SIZE = 7                    
 PCT_THRESHOLD = 0.30               
 MODEL_FILES = {
     "low":  "lstm_expense_model_low.h5",
@@ -97,8 +97,27 @@ def choose_model_by_value(value_real):
         return 'high', models['high']
     return next(iter(models.items()))
 
-def seq_to_model_input(seq_scaled):
-    return np.array(seq_scaled).reshape(1, len(seq_scaled), 1)
+def calculate_date_features(date):
+    """Calculate date features for LSTM input"""
+    day_of_month = date.day
+    month = date.month
+    
+    day_sin = np.sin(2 * np.pi * day_of_month / 31)
+    day_cos = np.cos(2 * np.pi * day_of_month / 31)
+    month_sin = np.sin(2 * np.pi * month / 12)
+    month_cos = np.cos(2 * np.pi * month / 12)
+    
+    return day_sin, day_cos, month_sin, month_cos
+
+def seq_to_model_input(seq_scaled, dates):
+    """Create 5-feature input with actual date features for LSTM"""
+    seq_5d = []
+    for i, (amount, date) in enumerate(zip(seq_scaled, dates)):
+        # Calculate date features for each date in the sequence
+        day_sin, day_cos, month_sin, month_cos = calculate_date_features(date)
+        seq_5d.append([amount, day_sin, day_cos, month_sin, month_cos])
+    
+    return np.array(seq_5d).reshape(1, len(seq_scaled), 5)
 
 def inverse_amount(scaled_val):
     df_inv = pd.DataFrame([[scaled_val]], columns=["Amount"])
@@ -112,10 +131,15 @@ def scale_amounts(arr_amounts):
 def plot_results(dates, actuals, preds, correct_mask, overall_accuracy):
     N = len(actuals)
     plt.figure(figsize=(12,6))
-    plt.plot(dates, actuals, label='Actual', marker='o', linewidth=1)
+    
+    # Plot actual values (including zeros/missing as 0)
+    actuals_to_plot = [0 if a is None or np.isnan(a) else a for a in actuals]
+    plt.plot(dates, actuals_to_plot, label='Actual', marker='o', linewidth=1)
     plt.plot(dates, preds, label='Predicted', marker='o', linestyle='dashed', linewidth=1)
+    
     for i in range(N):
         plt.axvspan(dates[i]-timedelta(hours=12), dates[i]+timedelta(hours=12), color='green' if correct_mask[i] else 'red', alpha=0.08)
+    
     plt.xticks(rotation=45)
     plt.title(f"Rolling predictions (window={WINDOW_SIZE}) — overall correct (±{int(PCT_THRESHOLD*100)}%): {overall_accuracy:.2f}%")
     plt.xlabel("Date")
@@ -245,11 +269,20 @@ def calculate_total_all_predictions_single(y_true, y_pred):
 # ------------------------
 
 @app.post("/simulateTomorrow")
-def simulateTomorrow(currentDateTime: str = Query(..., description="Current date in YYYY-MM-DD format")):
+def simulateTomorrow(
+    currentDateTime: str = Query(..., description="Current date in YYYY-MM-DD format"),
+    accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)")
+):
     """
     Predict tomorrow's expense based on current date and historical data
     """
     try:
+        # Validate accuracy parameter
+        if accuracy <= 0 or accuracy > 1:
+            return JSONResponse({
+                "error": "Accuracy parameter must be between 0 and 1 (e.g., 0.30 for 30%)"
+            }, status_code=400)
+            
         # Parse the current date
         current_date = datetime.strptime(currentDateTime, "%Y-%m-%d")
         tomorrow_date = current_date + timedelta(days=1)
@@ -288,8 +321,8 @@ def simulateTomorrow(currentDateTime: str = Query(..., description="Current date
         last_real_amount = float(recent_data[-1])
         model_label, model_obj = choose_model_by_value(last_real_amount)
         
-        # Prepare input for prediction
-        X = seq_to_model_input(scaled_recent)
+        # Prepare input for prediction (with date features)
+        X = seq_to_model_input(scaled_recent, recent_dates)
         
         # Make prediction
         pred_scaled = float(model_obj.predict(X, verbose=0)[0][0])
@@ -332,7 +365,8 @@ def simulateTomorrow(currentDateTime: str = Query(..., description="Current date
             "model_thresholds": {
                 "low_threshold": round(low_th, 2),
                 "high_threshold": round(high_th, 2)
-            }
+            },
+            "accuracy_threshold_used": accuracy
         }
         
         return response
@@ -347,175 +381,145 @@ def simulateTomorrow(currentDateTime: str = Query(..., description="Current date
         }, status_code=500)
 
 @app.post("/simulateTomorrowAuto")
-def simulateTomorrowAuto():
+def simulateTomorrowAuto(accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)")):
     """
     Predict tomorrow's expense using today's date automatically
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    return simulateTomorrow(today)
+    return simulateTomorrow(today, accuracy)
 
-@app.post("/simulateData")
-def simulateData(max_days: int = Query(None, description="How many sequential days to simulate")):
+@app.post("/simulate")
+def simulate(
+    max_days: int = Query(None, description="Limit how many days to simulate (default = 30)"),
+    accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)")
+):
     """
-    Rolling simulation that forces predictions for sequential calendar days.
-    First prediction day = tomorrow from PC date.
-    If the CSV does not contain that date, actual = None.
+    Rolling future simulation starting from TOMORROW (PC date + 1).
+    Includes detailed console logging for debugging.
     """
-    
-    # Must have enough history
+
     if len(amounts_daily) < WINDOW_SIZE:
         return JSONResponse(
-            {"error": f"Not enough data. Need {WINDOW_SIZE} days."},
+            {"error": f"Need at least {WINDOW_SIZE} daily rows to simulate."},
             status_code=400
         )
 
+    # Validate accuracy parameter
+    if accuracy <= 0 or accuracy > 1:
+        return JSONResponse({
+            "error": "Accuracy parameter must be between 0 and 1 (e.g., 0.30 for 30%)"
+        }, status_code=400)
+
     # -------------------------------
-    # 1) Detect today from PC
+    # 1) Detect today + 1 (first prediction day)
     # -------------------------------
     today = datetime.now().date()
     first_pred_date = today + timedelta(days=1)
 
-    # If user specifies max_days → limit
     if max_days is None or max_days <= 0:
-        max_days = 30  # default simulate 30 days
+        max_days = 30
+
+    print("\n=== SIMULATION DEBUG START ===")
+    print(f"PC Today: {today}")
+    print(f"Prediction Start Day: {first_pred_date}")
+    print(f"Simulating {max_days} days")
+    print(f"Accuracy threshold: {accuracy*100}%")
+    print()
 
     # -------------------------------
-    # 2) Prepare a lookup dict of real CSV amounts
+    # 2) Real data lookup
     # -------------------------------
-    real_lookup = {
-        d.date(): float(a) for d, a in zip(dates_daily, amounts_daily)
-    }
+    real_lookup = {d.date(): float(a) for d, a in zip(dates_daily, amounts_daily)}
 
     # -------------------------------
-    # 3) Start with last WINDOW_SIZE real values
+    # 3) Seed last WINDOW_SIZE values
     # -------------------------------
     recent_values = list(amounts_daily[-WINDOW_SIZE:])
+    recent_dates = list(dates_daily[-WINDOW_SIZE:])
     recent_scaled = scale_amounts(recent_values)
 
-    preds, actuals, datelist = [], [], []
+    print(f"Seed window ({WINDOW_SIZE} days): {recent_values}")
+    print(f"CSV range: {dates_daily[0].date()} → {dates_daily[-1].date()}\n")
+
+    preds, actuals, pred_dates = [], [], []
 
     # -------------------------------
-    # 4) Sequential day-by-day prediction loop
+    # 4) Day-by-day prediction loop
     # -------------------------------
     for step in range(max_days):
 
         current_pred_date = first_pred_date + timedelta(days=step)
-        datelist.append(current_pred_date.strftime("%Y-%m-%d"))
+        pred_dates.append(current_pred_date)
 
-        # Select model based on last real known value
-        last_real = recent_values[-1]
-        model_label, model_obj = choose_model_by_value(last_real)
+        print(f"# Day {step+1} → {current_pred_date}")
 
-        # Prepare input
-        X = seq_to_model_input(recent_scaled)
+        # -------- Model selection --------
+        last_real_for_choice = recent_values[-1]
+        model_label, model_obj = choose_model_by_value(last_real_for_choice)
+        print(f"  Model used: {model_label} (last real={last_real_for_choice})")
+
+        # -------- Prediction --------
+        X = seq_to_model_input(recent_scaled, recent_dates)
         pred_scaled = float(model_obj.predict(X, verbose=0)[0][0])
         pred_amount = inverse_amount(pred_scaled)
 
-        # Ensure prediction is finite
         if not np.isfinite(pred_amount):
+            print("  WARNING: Non-finite prediction → forcing to 0")
             pred_amount = 0.0
 
         preds.append(pred_amount)
+        print(f"  Predicted amount: {pred_amount:.2f}")
 
-        # Check if this date exists in real CSV
-        actual = real_lookup.get(current_pred_date, None)
-        actuals.append(actual)
+        # -------- Actual lookup --------
+        actual_amount = real_lookup.get(current_pred_date, None)
+        actuals.append(actual_amount)
 
-        # If real data exists → use real value in window
-        if actual is not None:
-            next_val = actual
+        if actual_amount is None:
+            print("  Actual: MISSING from CSV")
         else:
-            # No real data → treat prediction as next known history
-            next_val = pred_amount
+            print(f"  Actual (CSV): {actual_amount:.2f}")
 
-        # Update rolling window
-        recent_values.append(next_val)
+        # -------- Update rolling window --------
+        value_for_next_window = actual_amount if actual_amount is not None else pred_amount
+
+        recent_values.append(value_for_next_window)
         recent_values = recent_values[-WINDOW_SIZE:]
+
+        # Update dates window
+        recent_dates.append(current_pred_date)
+        recent_dates = recent_dates[-WINDOW_SIZE:]
+
+        # Rescale after update
         recent_scaled = scale_amounts(recent_values)
 
+        print(f"  Next value used for LSTM window: {value_for_next_window:.2f}")
+        print(f"  Updated window tail: {recent_values[-3:]}\n")
+
+    print("=== SIMULATION DEBUG END ===\n")
+
     # -------------------------------
-    # 5) Build JSON response using individual metric functions
+    # 5) Correctness mask using the provided accuracy parameter
     # -------------------------------
-    results = []
-    
-    for d, p, a in zip(datelist, preds, actuals):
-        if a is not None:
-            within = abs(p - a) / a <= PCT_THRESHOLD if a != 0 else True
+    correctness = []
+    for p, a in zip(preds, actuals):
+        if a is None:
+            correctness.append(False)
+        elif a == 0:
+            correctness.append(True)
         else:
-            within = None
+            correctness.append(abs(p - a) / a <= accuracy)
 
-        results.append({
-            "date": d,
-            "predicted": round(p, 2),
-            "actual": round(a, 2) if a is not None else None,
-            "within_threshold": within
-        })
+    valid_mask = [c for c, a in zip(correctness, actuals) if a is not None]
+    overall_accuracy = float(np.mean(valid_mask) * 100) if valid_mask else 0.0
 
-    # CALCULATE EACH METRIC USING INDIVIDUAL FUNCTIONS
-    mae = calculate_mae_single(actuals, preds)
-    rmse = calculate_rmse_single(actuals, preds)
-    r2 = calculate_r2_single(actuals, preds)
-    accuracy_pct = calculate_accuracy_percentage_single(actuals, preds)
-    correct_count = calculate_correct_predictions_single(actuals, preds)
-    
-    # Use the NEW function that counts ALL predictions, not just validated ones
-    total_count = calculate_total_all_predictions_single(actuals, preds)
-
-    # Ensure all metrics are JSON serializable
-    response_data = {
-        "auto_detected_today": today.strftime("%Y-%m-%d"),
-        "simulation_start_day": first_pred_date.strftime("%Y-%m-%d"),
-        "overall_metrics": {
-            "mean_absolute_error": float(mae) if np.isfinite(mae) else 0.0,
-            "root_mean_squared_error": float(rmse) if np.isfinite(rmse) else 0.0,
-            "r2_score": float(r2) if np.isfinite(r2) else 0.0,
-            "accuracy_percentage": float(accuracy_pct) if np.isfinite(accuracy_pct) else 0.0,
-            "correct_predictions": int(correct_count),
-            "total_predictions": int(total_count),
-            "threshold": f"±{int(PCT_THRESHOLD*100)}%"
-        },
-        "predictions": results
-    }
-    
-    return response_data
-
-@app.post("/simulate")
-def simulate(max_days: int = Query(None, description="Limit how many days to simulate (default = all)")):
-    if len(amounts_daily) < WINDOW_SIZE + 1:
-        return JSONResponse({"error": f"Need at least {WINDOW_SIZE+1} daily rows to simulate."}, status_code=400)
-
-    scaled_all = scale_amounts(amounts_daily)
-    start_idx = WINDOW_SIZE
-    end_idx = len(amounts_daily)
-    if max_days is not None and max_days > 0:
-        end_idx = min(end_idx, start_idx + max_days)
-
-    preds_list, actuals_list, pred_dates, correct_mask = [], [], [], []
-
-    for i in range(start_idx, end_idx):
-        window_scaled = scaled_all[i-WINDOW_SIZE:i]
-        last_real_amount = float(amounts_daily[i-1])
-        model_label, model_obj = choose_model_by_value(last_real_amount)
-        X = seq_to_model_input(window_scaled)
-        pred_scaled = float(model_obj.predict(X, verbose=0)[0][0])
-        pred_amount = inverse_amount(pred_scaled)
-        actual_amount = float(amounts_daily[i])
-        pred_date = dates_daily[i]
-
-        preds_list.append(pred_amount)
-        actuals_list.append(actual_amount)
-        pred_dates.append(pred_date)
-        correct_mask.append(abs(pred_amount-actual_amount)/actual_amount <= PCT_THRESHOLD if actual_amount!=0 else True)
-
-    y_true = np.array(actuals_list)
-    y_pred = np.array(preds_list)
-    mae = float(mean_absolute_error(y_true, y_pred))
-    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    r2 = float(r2_score(y_true, y_pred))
-    pct_within = float(np.mean(correct_mask) * 100)
-
-    buf = plot_results(pred_dates, y_true, y_pred, correct_mask, pct_within)
+    # -------------------------------
+    # 6) Plot result - plot zeros for missing dates
+    # -------------------------------
+    # Replace None values with 0 for plotting
+    actuals_clean = [0 if a is None else a for a in actuals]
+    buf = plot_results(pred_dates, actuals_clean, preds, correctness, overall_accuracy)
     buf.seek(0)
+
     return StreamingResponse(buf, media_type="image/png")
 
 # ------------------------
@@ -526,10 +530,9 @@ def root():
     return {
         "message": "Rolling simulation ready.",
         "endpoints": {
-            "simulate": "POST /simulate (optional query param max_days) - returns PNG plot",
-            "simulateData": "POST /simulateData (optional query param max_days) - returns JSON data", 
-            "simulateTomorrow": "POST /simulateTomorrow?currentDateTime=YYYY-MM-DD - predict tomorrow",
-            "simulateTomorrowAuto": "POST /simulateTomorrowAuto - predict tomorrow using today's date"
+            "simulate": "POST /simulate (optional query params max_days, accuracy) - returns PNG plot",
+            "simulateTomorrow": "POST /simulateTomorrow?currentDateTime=YYYY-MM-DD&accuracy=0.30 - predict tomorrow",
+            "simulateTomorrowAuto": "POST /simulateTomorrowAuto?accuracy=0.30 - predict tomorrow using today's date"
         },
         "notes": "Simulation aggregates multiple transactions per day into daily totals.",
         "current_data_stats": {
@@ -542,3 +545,7 @@ def root():
             "accuracy_threshold": f"±{int(PCT_THRESHOLD*100)}%"
         }
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
