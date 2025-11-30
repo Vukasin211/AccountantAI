@@ -31,7 +31,7 @@ app.add_middleware(
 # ------------------------
 # 2) Config
 # ------------------------
-CSV_FILE = "expenses5.csv"         
+CSV_FILE = "Personal_Finance_Dataset2.csv"         
 WINDOW_SIZE = 7                    
 PCT_THRESHOLD = 0.30               
 MODEL_FILES = {
@@ -39,6 +39,7 @@ MODEL_FILES = {
     "mid":  "lstm_expense_model_mid.h5",
     "high": "lstm_expense_model_high.h5"
 }
+SINGLE_MODEL_FILE = "lstm_expense_model_single.h5"  # Single model file
 
 # ------------------------
 # 3) Load CSV and models at startup
@@ -73,7 +74,7 @@ scaler.fit(df_daily[['Amount']])
 low_th = df_daily['Amount'].quantile(0.33)
 high_th = df_daily['Amount'].quantile(0.66)
 
-# load models
+# load multi-models
 models = {}
 for label, path in MODEL_FILES.items():
     if os.path.exists(path):
@@ -82,7 +83,15 @@ for label, path in MODEL_FILES.items():
     else:
         print(f"Model not found (skipping): {path}")
 
-if not models:
+# load single model
+single_model = None
+if os.path.exists(SINGLE_MODEL_FILE):
+    single_model = load_model(SINGLE_MODEL_FILE, compile=False)
+    print(f"Loaded single model: {SINGLE_MODEL_FILE}")
+else:
+    print(f"Single model not found: {SINGLE_MODEL_FILE}")
+
+if not models and single_model is None:
     raise RuntimeError("No models loaded. Place model files in working directory.")
 
 # ------------------------
@@ -110,14 +119,9 @@ def calculate_date_features(date):
     return day_sin, day_cos, month_sin, month_cos
 
 def seq_to_model_input(seq_scaled, dates):
-    """Create 5-feature input with actual date features for LSTM"""
-    seq_5d = []
-    for i, (amount, date) in enumerate(zip(seq_scaled, dates)):
-        # Calculate date features for each date in the sequence
-        day_sin, day_cos, month_sin, month_cos = calculate_date_features(date)
-        seq_5d.append([amount, day_sin, day_cos, month_sin, month_cos])
-    
-    return np.array(seq_5d).reshape(1, len(seq_scaled), 5)
+    """Create 1-feature input for LSTM (compatible with trained models)"""
+    # Use only the amount values - models were trained with 1 feature
+    return np.array(seq_scaled).reshape(1, len(seq_scaled), 1)
 
 def inverse_amount(scaled_val):
     df_inv = pd.DataFrame([[scaled_val]], columns=["Amount"])
@@ -128,7 +132,7 @@ def scale_amounts(arr_amounts):
     scaled = scaler.transform(df_in)
     return scaled.reshape(-1)
 
-def plot_results(dates, actuals, preds, correct_mask, overall_accuracy):
+def plot_results(dates, actuals, preds, correct_mask, overall_accuracy, accuracy_threshold=PCT_THRESHOLD, overestimate_ok=False, single_model=False):
     N = len(actuals)
     plt.figure(figsize=(12,6))
     
@@ -141,7 +145,14 @@ def plot_results(dates, actuals, preds, correct_mask, overall_accuracy):
         plt.axvspan(dates[i]-timedelta(hours=12), dates[i]+timedelta(hours=12), color='green' if correct_mask[i] else 'red', alpha=0.08)
     
     plt.xticks(rotation=45)
-    plt.title(f"Rolling predictions (window={WINDOW_SIZE}) — overall correct (±{int(PCT_THRESHOLD*100)}%): {overall_accuracy:.2f}%")
+    
+    # Update title based on overestimate_ok and single_model settings
+    model_type = "Single Model" if single_model else "Multi-Model"
+    if overestimate_ok:
+        plt.title(f"Rolling predictions ({model_type}, window={WINDOW_SIZE}) — overall correct (±{int(accuracy_threshold*100)}% or overestimate): {overall_accuracy:.2f}%")
+    else:
+        plt.title(f"Rolling predictions ({model_type}, window={WINDOW_SIZE}) — overall correct (±{int(accuracy_threshold*100)}%): {overall_accuracy:.2f}%")
+    
     plt.xlabel("Date")
     plt.ylabel("Daily Expense Amount")
     plt.legend()
@@ -214,7 +225,7 @@ def calculate_r2_single(y_true, y_pred):
     except:
         return 0.0
 
-def calculate_accuracy_percentage_single(y_true, y_pred, threshold=PCT_THRESHOLD):
+def calculate_accuracy_percentage_single(y_true, y_pred, threshold=PCT_THRESHOLD, overestimate_ok=False):
     """Calculate accuracy percentage - returns single float"""
     valid_preds, valid_actuals = get_valid_prediction_pairs(y_pred, y_true)
     if len(valid_actuals) == 0:
@@ -226,8 +237,14 @@ def calculate_accuracy_percentage_single(y_true, y_pred, threshold=PCT_THRESHOLD
             if actual == 0:
                 correct_mask.append(True)
             else:
-                error_ratio = abs(pred - actual) / actual
-                correct_mask.append(error_ratio <= threshold)
+                if overestimate_ok:
+                    # Consider correct if within threshold OR prediction is higher than actual
+                    error_ratio = abs(pred - actual) / actual
+                    correct_mask.append(error_ratio <= threshold or pred >= actual)
+                else:
+                    # Original logic - only within threshold
+                    error_ratio = abs(pred - actual) / actual
+                    correct_mask.append(error_ratio <= threshold)
         
         correct_count = sum(correct_mask)
         accuracy = (correct_count / len(valid_actuals) * 100) if len(valid_actuals) > 0 else 0.0
@@ -235,7 +252,7 @@ def calculate_accuracy_percentage_single(y_true, y_pred, threshold=PCT_THRESHOLD
     except:
         return 0.0
 
-def calculate_correct_predictions_single(y_true, y_pred, threshold=PCT_THRESHOLD):
+def calculate_correct_predictions_single(y_true, y_pred, threshold=PCT_THRESHOLD, overestimate_ok=False):
     """Calculate number of correct predictions - returns single integer"""
     valid_preds, valid_actuals = get_valid_prediction_pairs(y_pred, y_true)
     if len(valid_actuals) == 0:
@@ -247,8 +264,14 @@ def calculate_correct_predictions_single(y_true, y_pred, threshold=PCT_THRESHOLD
             if actual == 0:
                 correct_mask.append(True)
             else:
-                error_ratio = abs(pred - actual) / actual
-                correct_mask.append(error_ratio <= threshold)
+                if overestimate_ok:
+                    # Consider correct if within threshold OR prediction is higher than actual
+                    error_ratio = abs(pred - actual) / actual
+                    correct_mask.append(error_ratio <= threshold or pred >= actual)
+                else:
+                    # Original logic - only within threshold
+                    error_ratio = abs(pred - actual) / actual
+                    correct_mask.append(error_ratio <= threshold)
         
         return int(sum(correct_mask))
     except:
@@ -265,7 +288,7 @@ def calculate_total_all_predictions_single(y_true, y_pred):
     return len(all_preds)
 
 # ------------------------
-# 5) API endpoints
+# 5) API endpoints - Multi-Model (Original)
 # ------------------------
 
 @app.post("/simulateTomorrow")
@@ -274,7 +297,7 @@ def simulateTomorrow(
     accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)")
 ):
     """
-    Predict tomorrow's expense based on current date and historical data
+    Predict tomorrow's expense based on current date and historical data (Multi-Model)
     """
     try:
         # Validate accuracy parameter
@@ -366,7 +389,8 @@ def simulateTomorrow(
                 "low_threshold": round(low_th, 2),
                 "high_threshold": round(high_th, 2)
             },
-            "accuracy_threshold_used": accuracy
+            "accuracy_threshold_used": accuracy,
+            "model_type": "multi-model"
         }
         
         return response
@@ -383,7 +407,7 @@ def simulateTomorrow(
 @app.post("/simulateTomorrowAuto")
 def simulateTomorrowAuto(accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)")):
     """
-    Predict tomorrow's expense using today's date automatically
+    Predict tomorrow's expense using today's date automatically (Multi-Model)
     """
     today = datetime.now().strftime("%Y-%m-%d")
     return simulateTomorrow(today, accuracy)
@@ -391,10 +415,11 @@ def simulateTomorrowAuto(accuracy: float = Query(0.30, description="Accuracy thr
 @app.post("/simulate")
 def simulate(
     max_days: int = Query(None, description="Limit how many days to simulate (default = 30)"),
-    accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)")
+    accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)"),
+    overestimate_ok: int = Query(0, description="If set to 1, considers overestimates as correct (default 0)")
 ):
     """
-    Rolling future simulation starting from TOMORROW (PC date + 1).
+    Rolling future simulation starting from TOMORROW (PC date + 1). (Multi-Model)
     Includes detailed console logging for debugging.
     """
 
@@ -410,6 +435,15 @@ def simulate(
             "error": "Accuracy parameter must be between 0 and 1 (e.g., 0.30 for 30%)"
         }, status_code=400)
 
+    # Validate overestimate_ok parameter
+    if overestimate_ok not in [0, 1]:
+        return JSONResponse({
+            "error": "overestimate_ok parameter must be 0 or 1"
+        }, status_code=400)
+
+    # Convert to boolean
+    overestimate_ok_bool = bool(overestimate_ok)
+
     # -------------------------------
     # 1) Detect today + 1 (first prediction day)
     # -------------------------------
@@ -419,11 +453,12 @@ def simulate(
     if max_days is None or max_days <= 0:
         max_days = 30
 
-    print("\n=== SIMULATION DEBUG START ===")
+    print("\n=== SIMULATION DEBUG START (Multi-Model) ===")
     print(f"PC Today: {today}")
     print(f"Prediction Start Day: {first_pred_date}")
     print(f"Simulating {max_days} days")
     print(f"Accuracy threshold: {accuracy*100}%")
+    print(f"Overestimate considered correct: {overestimate_ok_bool}")
     print()
 
     # -------------------------------
@@ -498,7 +533,7 @@ def simulate(
     print("=== SIMULATION DEBUG END ===\n")
 
     # -------------------------------
-    # 5) Correctness mask using the provided accuracy parameter
+    # 5) Correctness mask using the provided accuracy parameter and overestimate setting
     # -------------------------------
     correctness = []
     for p, a in zip(preds, actuals):
@@ -507,7 +542,13 @@ def simulate(
         elif a == 0:
             correctness.append(True)
         else:
-            correctness.append(abs(p - a) / a <= accuracy)
+            if overestimate_ok_bool:
+                # Consider correct if within accuracy threshold OR prediction is higher than actual
+                error_ratio = abs(p - a) / a
+                correctness.append(error_ratio <= accuracy or p >= a)
+            else:
+                # Original logic - only within accuracy threshold
+                correctness.append(abs(p - a) / a <= accuracy)
 
     valid_mask = [c for c, a in zip(correctness, actuals) if a is not None]
     overall_accuracy = float(np.mean(valid_mask) * 100) if valid_mask else 0.0
@@ -517,23 +558,308 @@ def simulate(
     # -------------------------------
     # Replace None values with 0 for plotting
     actuals_clean = [0 if a is None else a for a in actuals]
-    buf = plot_results(pred_dates, actuals_clean, preds, correctness, overall_accuracy)
+    buf = plot_results(pred_dates, actuals_clean, preds, correctness, overall_accuracy, accuracy, overestimate_ok_bool, single_model=False)
+    buf.seek(0)
+
+    return StreamingResponse(buf, media_type="image/png")
+
+
+# ------------------------
+# 6) API endpoints - Single Model
+# ------------------------
+
+@app.post("/simulateTomorrowSingle")
+def simulateTomorrowSingle(
+    currentDateTime: str = Query(..., description="Current date in YYYY-MM-DD format"),
+    accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)")
+):
+    """
+    Predict tomorrow's expense based on current date and historical data (Single Model)
+    """
+    try:
+        if single_model is None:
+            return JSONResponse({
+                "error": "Single model not available. Please ensure lstm_expense_model_single.h5 exists."
+            }, status_code=400)
+            
+        # Validate accuracy parameter
+        if accuracy <= 0 or accuracy > 1:
+            return JSONResponse({
+                "error": "Accuracy parameter must be between 0 and 1 (e.g., 0.30 for 30%)"
+            }, status_code=400)
+            
+        # Parse the current date
+        current_date = datetime.strptime(currentDateTime, "%Y-%m-%d")
+        tomorrow_date = current_date + timedelta(days=1)
+        
+        # Check if we have enough historical data
+        if len(amounts_daily) < WINDOW_SIZE:
+            return JSONResponse({
+                "error": f"Not enough historical data. Need at least {WINDOW_SIZE} days, but have {len(amounts_daily)}"
+            }, status_code=400)
+        
+        # Get the most recent WINDOW_SIZE days of data
+        recent_data = amounts_daily[-WINDOW_SIZE:]
+        recent_dates = dates_daily[-WINDOW_SIZE:]
+        
+        # Find today's spending in the data
+        today_spending = None
+        today_date_str = current_date.strftime("%Y-%m-%d")
+        
+        # Look for today's date in the historical data
+        for i, date in enumerate(recent_dates):
+            if date.strftime("%Y-%m-%d") == today_date_str:
+                today_spending = float(recent_data[i])
+                break
+        
+        # If today's data not found in recent window, check the entire dataset
+        if today_spending is None:
+            for i, date in enumerate(dates_daily):
+                if date.strftime("%Y-%m-%d") == today_date_str:
+                    today_spending = float(amounts_daily[i])
+                    break
+        
+        # Scale the recent data
+        scaled_recent = scale_amounts(recent_data)
+        
+        # Prepare input for prediction
+        X = seq_to_model_input(scaled_recent, recent_dates)
+        
+        # Make prediction using single model
+        pred_scaled = float(single_model.predict(X, verbose=0)[0][0])
+        pred_amount = inverse_amount(pred_scaled)
+        
+        # Get some context about recent spending
+        recent_avg = float(np.mean(recent_data))
+        recent_std = float(np.std(recent_data))
+        
+        # Determine spending trend
+        if len(recent_data) >= 3:
+            last_three = recent_data[-3:]
+            trend = "increasing" if last_three[-1] > last_three[0] else "decreasing" if last_three[-1] < last_three[0] else "stable"
+        else:
+            trend = "unknown"
+        
+        # Prepare response
+        response = {
+            "prediction": {
+                "date": tomorrow_date.strftime("%Y-%m-%d"),
+                "predicted_amount": round(pred_amount, 2),
+                "model_used": "single",
+                "confidence_interval": {
+                    "lower_bound": round(max(0, pred_amount - recent_std), 2),
+                    "upper_bound": round(pred_amount + recent_std, 2)
+                }
+            },
+            "current_day": {
+                "date": today_date_str,
+                "actual_amount": round(today_spending, 2) if today_spending is not None else None,
+                "status": "found" if today_spending is not None else "not_found_in_data"
+            },
+            "context": {
+                "recent_average": round(recent_avg, 2),
+                "recent_volatility": round(recent_std, 2),
+                "trend": trend,
+                "last_actual_amount": round(float(recent_data[-1]), 2),
+                "days_used_for_prediction": WINDOW_SIZE
+            },
+            "accuracy_threshold_used": accuracy,
+            "model_type": "single-model"
+        }
+        
+        return response
+        
+    except ValueError as e:
+        return JSONResponse({
+            "error": f"Invalid date format. Please use YYYY-MM-DD format. Error: {str(e)}"
+        }, status_code=400)
+    except Exception as e:
+        return JSONResponse({
+            "error": f"Prediction failed: {str(e)}"
+        }, status_code=500)
+
+@app.post("/simulateTomorrowAutoSingle")
+def simulateTomorrowAutoSingle(accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)")):
+    """
+    Predict tomorrow's expense using today's date automatically (Single Model)
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    return simulateTomorrowSingle(today, accuracy)
+
+@app.post("/simulateSingle")
+def simulateSingle(
+    max_days: int = Query(None, description="Limit how many days to simulate (default = 30)"),
+    accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)"),
+    overestimate_ok: int = Query(0, description="If set to 1, considers overestimates as correct (default 0)")
+):
+    """
+    Rolling future simulation starting from TOMORROW (PC date + 1). (Single Model)
+    Includes detailed console logging for debugging.
+    """
+
+    if single_model is None:
+        return JSONResponse({
+            "error": "Single model not available. Please ensure lstm_expense_model_single.h5 exists."
+        }, status_code=400)
+
+    if len(amounts_daily) < WINDOW_SIZE:
+        return JSONResponse(
+            {"error": f"Need at least {WINDOW_SIZE} daily rows to simulate."},
+            status_code=400
+        )
+
+    # Validate accuracy parameter
+    if accuracy <= 0 or accuracy > 1:
+        return JSONResponse({
+            "error": "Accuracy parameter must be between 0 and 1 (e.g., 0.30 for 30%)"
+        }, status_code=400)
+
+    # Validate overestimate_ok parameter
+    if overestimate_ok not in [0, 1]:
+        return JSONResponse({
+            "error": "overestimate_ok parameter must be 0 or 1"
+        }, status_code=400)
+
+    # Convert to boolean
+    overestimate_ok_bool = bool(overestimate_ok)
+
+    # -------------------------------
+    # 1) Detect today + 1 (first prediction day)
+    # -------------------------------
+    today = datetime.now().date()
+    first_pred_date = today + timedelta(days=1)
+
+    if max_days is None or max_days <= 0:
+        max_days = 30
+
+    print("\n=== SIMULATION DEBUG START (Single Model) ===")
+    print(f"PC Today: {today}")
+    print(f"Prediction Start Day: {first_pred_date}")
+    print(f"Simulating {max_days} days")
+    print(f"Accuracy threshold: {accuracy*100}%")
+    print(f"Overestimate considered correct: {overestimate_ok_bool}")
+    print()
+
+    # -------------------------------
+    # 2) Real data lookup
+    # -------------------------------
+    real_lookup = {d.date(): float(a) for d, a in zip(dates_daily, amounts_daily)}
+
+    # -------------------------------
+    # 3) Seed last WINDOW_SIZE values
+    # -------------------------------
+    recent_values = list(amounts_daily[-WINDOW_SIZE:])
+    recent_dates = list(dates_daily[-WINDOW_SIZE:])
+    recent_scaled = scale_amounts(recent_values)
+
+    print(f"Seed window ({WINDOW_SIZE} days): {recent_values}")
+    print(f"CSV range: {dates_daily[0].date()} → {dates_daily[-1].date()}\n")
+
+    preds, actuals, pred_dates = [], [], []
+
+    # -------------------------------
+    # 4) Day-by-day prediction loop
+    # -------------------------------
+    for step in range(max_days):
+
+        current_pred_date = first_pred_date + timedelta(days=step)
+        pred_dates.append(current_pred_date)
+
+        print(f"# Day {step+1} → {current_pred_date}")
+
+        # -------- Prediction --------
+        X = seq_to_model_input(recent_scaled, recent_dates)
+        pred_scaled = float(single_model.predict(X, verbose=0)[0][0])
+        pred_amount = inverse_amount(pred_scaled)
+
+        if not np.isfinite(pred_amount):
+            print("  WARNING: Non-finite prediction → forcing to 0")
+            pred_amount = 0.0
+
+        preds.append(pred_amount)
+        print(f"  Predicted amount: {pred_amount:.2f}")
+
+        # -------- Actual lookup --------
+        actual_amount = real_lookup.get(current_pred_date, None)
+        actuals.append(actual_amount)
+
+        if actual_amount is None:
+            print("  Actual: MISSING from CSV")
+        else:
+            print(f"  Actual (CSV): {actual_amount:.2f}")
+
+        # -------- Update rolling window --------
+        value_for_next_window = actual_amount if actual_amount is not None else pred_amount
+
+        recent_values.append(value_for_next_window)
+        recent_values = recent_values[-WINDOW_SIZE:]
+
+        # Update dates window
+        recent_dates.append(current_pred_date)
+        recent_dates = recent_dates[-WINDOW_SIZE:]
+
+        # Rescale after update
+        recent_scaled = scale_amounts(recent_values)
+
+        print(f"  Next value used for LSTM window: {value_for_next_window:.2f}")
+        print(f"  Updated window tail: {recent_values[-3:]}\n")
+
+    print("=== SIMULATION DEBUG END ===\n")
+
+    # -------------------------------
+    # 5) Correctness mask using the provided accuracy parameter and overestimate setting
+    # -------------------------------
+    correctness = []
+    for p, a in zip(preds, actuals):
+        if a is None:
+            correctness.append(False)
+        elif a == 0:
+            correctness.append(True)
+        else:
+            if overestimate_ok_bool:
+                # Consider correct if within accuracy threshold OR prediction is higher than actual
+                error_ratio = abs(p - a) / a
+                correctness.append(error_ratio <= accuracy or p >= a)
+            else:
+                # Original logic - only within accuracy threshold
+                correctness.append(abs(p - a) / a <= accuracy)
+
+    valid_mask = [c for c, a in zip(correctness, actuals) if a is not None]
+    overall_accuracy = float(np.mean(valid_mask) * 100) if valid_mask else 0.0
+
+    # -------------------------------
+    # 6) Plot result - plot zeros for missing dates
+    # -------------------------------
+    # Replace None values with 0 for plotting
+    actuals_clean = [0 if a is None else a for a in actuals]
+    buf = plot_results(pred_dates, actuals_clean, preds, correctness, overall_accuracy, accuracy, overestimate_ok_bool, single_model=True)
     buf.seek(0)
 
     return StreamingResponse(buf, media_type="image/png")
 
 # ------------------------
-# 6) Root
+# 7) Root
 # ------------------------
 @app.get("/")
 def root():
-    return {
-        "message": "Rolling simulation ready.",
-        "endpoints": {
-            "simulate": "POST /simulate (optional query params max_days, accuracy) - returns PNG plot",
+    endpoints = {
+        "multi_model_endpoints": {
+            "simulate": "POST /simulate (optional query params max_days, accuracy, overestimate_ok) - returns PNG plot",
+            "simulateFuture": "POST /simulateFuture (optional query params max_days, accuracy, overestimate_ok) - returns PNG plot", 
             "simulateTomorrow": "POST /simulateTomorrow?currentDateTime=YYYY-MM-DD&accuracy=0.30 - predict tomorrow",
             "simulateTomorrowAuto": "POST /simulateTomorrowAuto?accuracy=0.30 - predict tomorrow using today's date"
         },
+        "single_model_endpoints": {
+            "simulateSingle": "POST /simulateSingle (optional query params max_days, accuracy, overestimate_ok) - returns PNG plot",
+            "simulateFutureSingle": "POST /simulateFutureSingle (optional query params max_days, accuracy, overestimate_ok) - returns PNG plot", 
+            "simulateTomorrowSingle": "POST /simulateTomorrowSingle?currentDateTime=YYYY-MM-DD&accuracy=0.30 - predict tomorrow",
+            "simulateTomorrowAutoSingle": "POST /simulateTomorrowAutoSingle?accuracy=0.30 - predict tomorrow using today's date"
+        }
+    }
+    
+    return {
+        "message": "Rolling simulation ready with both multi-model and single-model support.",
+        "endpoints": endpoints,
         "notes": "Simulation aggregates multiple transactions per day into daily totals.",
         "current_data_stats": {
             "total_days": len(amounts_daily),
@@ -542,7 +868,11 @@ def root():
                 "end": dates_daily[-1].strftime("%Y-%m-%d") if dates_daily else "No data"
             },
             "window_size": WINDOW_SIZE,
-            "accuracy_threshold": f"±{int(PCT_THRESHOLD*100)}%"
+            "accuracy_threshold": f"±{int(PCT_THRESHOLD*100)}%",
+            "models_loaded": {
+                "multi_models": list(models.keys()),
+                "single_model": "loaded" if single_model is not None else "not loaded"
+            }
         }
     }
 
