@@ -564,6 +564,301 @@ def simulate(
     return StreamingResponse(buf, media_type="image/png")
 
 
+#----------------------------------------------------------------------------
+
+
+@app.get("/simulate-json")
+def simulate_json(
+    max_days: int = Query(None, description="Limit how many days to simulate (default = 30)"),
+    accuracy: float = Query(0.30, description="Accuracy threshold as decimal (default 0.30 = 30%)"),
+    overestimate_ok: int = Query(0, description="If set to 1, considers overestimates as correct (default 0)")
+):
+    """
+    Rolling future simulation starting from TOMORROW (PC date + 1) in JSON format.
+    Includes comprehensive accuracy statistics.
+    """
+    
+    if len(amounts_daily) < WINDOW_SIZE:
+        return JSONResponse(
+            {"error": f"Need at least {WINDOW_SIZE} daily rows to simulate."},
+            status_code=400
+        )
+
+    # Validate accuracy parameter
+    if accuracy <= 0 or accuracy > 1:
+        return JSONResponse({
+            "error": "Accuracy parameter must be between 0 and 1 (e.g., 0.30 for 30%)"
+        }, status_code=400)
+
+    # Validate overestimate_ok parameter
+    if overestimate_ok not in [0, 1]:
+        return JSONResponse({
+            "error": "overestimate_ok parameter must be 0 or 1"
+        }, status_code=400)
+
+    # Convert to boolean
+    overestimate_ok_bool = bool(overestimate_ok)
+
+    # -------------------------------
+    # 1) Detect today + 1 (first prediction day)
+    # -------------------------------
+    today = datetime.now().date()
+    first_pred_date = today + timedelta(days=1)
+
+    if max_days is None or max_days <= 0:
+        max_days = 30
+
+    # -------------------------------
+    # 2) Real data lookup
+    # -------------------------------
+    real_lookup = {d.date(): float(a) for d, a in zip(dates_daily, amounts_daily)}
+
+    # -------------------------------
+    # 3) Seed last WINDOW_SIZE values
+    # -------------------------------
+    recent_values = list(amounts_daily[-WINDOW_SIZE:])
+    recent_dates = list(dates_daily[-WINDOW_SIZE:])
+    recent_scaled = scale_amounts(recent_values)
+
+    pred_dates = []
+    predictions = []
+    actuals = []
+    model_used_list = []
+    window_tails = []
+    correctness_list = []
+    errors = []
+    absolute_errors = []
+    squared_errors = []
+    percentage_errors = []
+
+    # -------------------------------
+    # 4) Day-by-day prediction loop
+    # -------------------------------
+    for step in range(max_days):
+        current_pred_date = first_pred_date + timedelta(days=step)
+        pred_dates.append(current_pred_date)
+
+        # -------- Model selection --------
+        last_real_for_choice = recent_values[-1]
+        model_label, model_obj = choose_model_by_value(last_real_for_choice)
+
+        # -------- Prediction --------
+        X = seq_to_model_input(recent_scaled, recent_dates)
+        pred_scaled = float(model_obj.predict(X, verbose=0)[0][0])
+        pred_amount = float(inverse_amount(pred_scaled))
+
+        if not np.isfinite(pred_amount):
+            pred_amount = 0.0
+
+        predictions.append(pred_amount)
+
+        # -------- Actual lookup --------
+        actual_amount = real_lookup.get(current_pred_date, None)
+        actual_amount_float = float(actual_amount) if actual_amount is not None else None
+        actuals.append(actual_amount_float)
+
+        # -------- Calculate error metrics --------
+        error = None
+        abs_error = None
+        sq_error = None
+        perc_error = None
+        error_ratio = None
+        correct = False
+        
+        if actual_amount is not None:
+            error = float(pred_amount - actual_amount)
+            abs_error = float(abs(error))
+            sq_error = float(error ** 2)
+            perc_error = float((abs_error / actual_amount) * 100) if actual_amount != 0 else 0.0
+            error_ratio = float(abs_error / actual_amount) if actual_amount != 0 else 0.0
+            
+            errors.append(error)
+            absolute_errors.append(abs_error)
+            squared_errors.append(sq_error)
+            percentage_errors.append(perc_error)
+            
+            # Determine correctness based on accuracy threshold
+            if actual_amount == 0:
+                correct = True
+            else:
+                if overestimate_ok_bool:
+                    # Consider correct if within accuracy threshold OR prediction is higher than actual
+                    correct = error_ratio <= accuracy or pred_amount >= actual_amount
+                else:
+                    # Original logic - only within accuracy threshold
+                    correct = error_ratio <= accuracy
+        
+        correctness_list.append(correct)
+
+        # -------- Update rolling window --------
+        value_for_next_window = actual_amount if actual_amount is not None else pred_amount
+
+        recent_values.append(value_for_next_window)
+        recent_values = recent_values[-WINDOW_SIZE:]
+
+        # Update dates window
+        recent_dates.append(current_pred_date)
+        recent_dates = recent_dates[-WINDOW_SIZE:]
+
+        # Rescale after update
+        recent_scaled = scale_amounts(recent_values)
+
+        # -------- Store window tail for debugging --------
+        window_tails.append([float(x) for x in recent_values[-3:]])
+
+        # -------- Store model info --------
+        model_used_list.append(model_label)
+
+    # -------------------------------
+    # 5) Calculate comprehensive statistics
+    # -------------------------------
+    # Filter only days with actual values for statistics
+    valid_indices = [i for i, a in enumerate(actuals) if a is not None]
+    valid_predictions = [predictions[i] for i in valid_indices]
+    valid_actuals = [actuals[i] for i in valid_indices]
+    valid_errors = errors if errors else []
+    valid_absolute_errors = absolute_errors if absolute_errors else []
+    valid_squared_errors = squared_errors if squared_errors else []
+    valid_percentage_errors = percentage_errors if percentage_errors else []
+    
+    # Overall accuracy (based on threshold)
+    valid_correctness = [c for c, a in zip(correctness_list, actuals) if a is not None]
+    overall_accuracy = float(np.mean(valid_correctness) * 100) if valid_correctness else 0.0
+    
+    # Basic error statistics
+    if valid_errors:
+        mae = float(np.mean(valid_absolute_errors))
+        mse = float(np.mean(valid_squared_errors))
+        rmse = float(np.sqrt(mse))
+        mape = float(np.mean(valid_percentage_errors))
+        mean_error = float(np.mean(valid_errors))
+        std_error = float(np.std(valid_errors))
+        median_error = float(np.median(valid_errors))
+        
+        # R-squared calculation
+        ss_res = np.sum((np.array(valid_predictions) - np.array(valid_actuals)) ** 2)
+        ss_tot = np.sum((np.array(valid_actuals) - np.mean(valid_actuals)) ** 2)
+        r_squared = float(1 - (ss_res / ss_tot)) if ss_tot != 0 else 0.0
+        
+        # Mean Absolute Percentage Error (MAPE) - alternative calculation
+        valid_for_mape = [(p, a) for p, a in zip(valid_predictions, valid_actuals) if a != 0]
+        if valid_for_mape:
+            mape_alt = float(np.mean([abs(p - a) / a * 100 for p, a in valid_for_mape]))
+        else:
+            mape_alt = 0.0
+        
+        # Directional accuracy (sign of change prediction)
+        directional_correct = 0
+        for i in range(1, len(valid_actuals)):
+            actual_change = valid_actuals[i] - valid_actuals[i-1]
+            predicted_change = valid_predictions[i] - valid_actuals[i-1]
+            if (actual_change >= 0 and predicted_change >= 0) or (actual_change < 0 and predicted_change < 0):
+                directional_correct += 1
+        directional_accuracy = (directional_correct / (len(valid_actuals) - 1)) * 100 if len(valid_actuals) > 1 else 0.0
+        
+        # Model-wise statistics
+        model_stats = {}
+        for model in ['low', 'mid', 'high']:
+            model_indices = [i for i in valid_indices if model_used_list[i] == model]
+            if model_indices:
+                model_preds = [predictions[i] for i in model_indices]
+                model_actuals = [actuals[i] for i in model_indices]
+                model_mae = float(np.mean([abs(p - a) for p, a in zip(model_preds, model_actuals)]))
+                model_count = len(model_indices)
+                model_stats[model] = {
+                    "count": model_count,
+                    "mae": round(model_mae, 2),
+                    "avg_prediction": round(np.mean(model_preds), 2),
+                    "avg_actual": round(np.mean(model_actuals), 2)
+                }
+    else:
+        mae = mse = rmse = mape = mean_error = std_error = median_error = r_squared = mape_alt = directional_accuracy = 0.0
+        model_stats = {}
+    
+    # Percentiles of absolute errors
+    if valid_absolute_errors:
+        error_percentiles = {
+            "25th": float(np.percentile(valid_absolute_errors, 25)),
+            "50th": float(np.percentile(valid_absolute_errors, 50)),
+            "75th": float(np.percentile(valid_absolute_errors, 75)),
+            "90th": float(np.percentile(valid_absolute_errors, 90)),
+            "95th": float(np.percentile(valid_absolute_errors, 95)),
+            "max": float(np.max(valid_absolute_errors))
+        }
+    else:
+        error_percentiles = {}
+
+    # -------------------------------
+    # 6) Prepare response data
+    # -------------------------------
+    simulation_data = []
+    for i in range(len(pred_dates)):
+        day_data = {
+            "day": i + 1,
+            "date": pred_dates[i].isoformat(),
+            "predicted_amount": round(predictions[i], 2),
+            "actual_amount": round(actuals[i], 2) if actuals[i] is not None else None,
+            "model_used": model_used_list[i],
+            "correct": correctness_list[i],
+            "window_tail": window_tails[i]
+        }
+            
+        simulation_data.append(day_data)
+
+    response = {
+        "metadata": {
+            "today": today.isoformat(),
+            "first_prediction_date": first_pred_date.isoformat(),
+            "max_days": max_days,
+            "accuracy_threshold": accuracy,
+            "overestimate_ok": overestimate_ok_bool,
+            "simulation_period": f"{first_pred_date.isoformat()} to {(first_pred_date + timedelta(days=max_days-1)).isoformat()}"
+        },
+        "summary_statistics": {
+            "comparison_days": len(valid_actuals),
+            "missing_days": len([a for a in actuals if a is None]),
+            "overall_accuracy": round(overall_accuracy, 2),
+            "correct_predictions": sum(valid_correctness),
+            "incorrect_predictions": len(valid_correctness) - sum(valid_correctness)
+        },
+        "error_statistics": {
+            "mean_absolute_error": round(mae, 2),
+            "mean_squared_error": round(mse, 2),
+            "root_mean_squared_error": round(rmse, 2),
+            "mean_absolute_percentage_error": round(mape, 2),
+            "mape_alternative": round(mape_alt, 2),
+            "mean_error": round(mean_error, 2),
+            "median_error": round(median_error, 2),
+            "error_standard_deviation": round(std_error, 2),
+            "r_squared": round(r_squared, 4),
+            "directional_accuracy": round(directional_accuracy, 2),
+            "error_percentiles": {k: round(v, 2) for k, v in error_percentiles.items()}
+        },
+        "model_performance": model_stats,
+        "data_summary": {
+            "actual_values": {
+                "mean": round(float(np.mean(valid_actuals)), 2) if valid_actuals else None,
+                "median": round(float(np.median(valid_actuals)), 2) if valid_actuals else None,
+                "std": round(float(np.std(valid_actuals)), 2) if valid_actuals else None,
+                "min": round(float(np.min(valid_actuals)), 2) if valid_actuals else None,
+                "max": round(float(np.max(valid_actuals)), 2) if valid_actuals else None
+            },
+            "predicted_values": {
+                "mean": round(float(np.mean(valid_predictions)), 2) if valid_predictions else None,
+                "median": round(float(np.median(valid_predictions)), 2) if valid_predictions else None,
+                "std": round(float(np.std(valid_predictions)), 2) if valid_predictions else None,
+                "min": round(float(np.min(valid_predictions)), 2) if valid_predictions else None,
+                "max": round(float(np.max(valid_predictions)), 2) if valid_predictions else None
+            }
+        },
+        "simulation": simulation_data
+    }
+
+    return JSONResponse(response)
+
+#--------------------------------------------------------------------------------
+
+
 # ------------------------
 # 6) API endpoints - Single Model
 # ------------------------
