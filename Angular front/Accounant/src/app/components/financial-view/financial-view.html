@@ -1,17 +1,119 @@
 <div class="parentTest">
-    <div class="test">
-        <h2>Options 1</h2>
-    </div>
-    <div class="test">
-        <h2>Central</h2>
-        <div>
-            <h2>IMG</h2>
-        </div>
-        <div>
-            <h2>Data</h2>
-        </div>
-    </div>
-    <div class="test">
-        <h2>Options 2</h2>
-    </div>    
+        <mat-card class="left_options">
+            <mat-card-title class = "title">Simulation settings</mat-card-title>
+
+            <mat-card-subtitle>Model Selection</mat-card-subtitle>
+            <mat-card-content>
+                <div class="radio-buttons">
+                    <mat-radio-group [(ngModel)]="selectedModel">
+                        <mat-radio-button value="single">Single model</mat-radio-button>
+                        <mat-radio-button value="optimal">Optimal model</mat-radio-button>
+                    </mat-radio-group>
+                </div>
+            </mat-card-content>
+
+            <div class="panel-content">
+                <mat-form-field appearance="outline">
+                <mat-label>Accuracy (%)</mat-label>
+                <input matInput type="number" [formControl]="accuracyCtrl">
+                <span matSuffix>%</span>
+                </mat-form-field>
+            </div>
+
+            <mat-card-actions>
+            <div class="custom-button-column">
+                <button
+                class="custom-btn submit-btn"
+                type="submit"
+                [disabled]="isSubmitting"
+                (click)="onSubmit()">
+                {{ isSubmitting ? 'RUNNING...' : 'SUBMIT' }}
+                </button>
+                <button class="custom-btn reset-btn" type="button" (click)="onReset()">RESET</button>
+            </div>
+            </mat-card-actions>
+        </mat-card>
+        <mat-card class="central">
+            <mat-card-title class ="title">Prediction graph</mat-card-title>
+            <div class="image-box">
+                <ng-container *ngIf="imageUrl$ | async as imageUrl; else imageLoadingOrEmpty">
+                    <img *ngIf="imageUrl; else noImage" [src]="imageUrl" alt="Simulation Image"
+                        style="max-width:100%; height:auto; display:block; margin-bottom:20px;">
+                </ng-container>
+
+                <ng-template #imageLoadingOrEmpty>
+                    <p *ngIf="isSubmitting; else noImage" class="image-state">Loading...</p>
+                </ng-template>
+
+                <ng-template #noImage>
+                    <p class="image-state">No image yet</p>
+                </ng-template>
+                </div>
+
+            <!-- Simulation days cards -->
+            <div class="central">
+
+                <p *ngIf="isLoadingDays" class="image-state">
+                    Loading days...
+                </p>
+
+                <div class="day-cards" *ngIf="simulationDays$ | async as simData">
+                    <mat-card
+                    *ngFor="let day of simData.simulation"
+                    class="day-card"
+                    [ngClass]="{
+                        'day-card-correct': day.correct,
+                        'day-card-incorrect': !day.correct
+                    }"
+                    >
+                    <mat-card-header>
+                        <mat-card-title>
+                        Day {{ day.day }} - {{ day.date }}
+                        </mat-card-title>
+                        <mat-card-subtitle>
+                        Model used: {{ day.model_used }}
+                        </mat-card-subtitle>
+                    </mat-card-header>
+
+                    <mat-card-content>
+                        <p>Predicted amount: {{ day.predicted_amount | number:'1.2-2' }}</p>
+                        <p>Actual amount: {{ day.actual_amount ?? 'N/A' }}</p>
+                        <p>Correct prediction? {{ day.correct ? 'Yes' : 'No' }}</p>
+                    </mat-card-content>
+                    </mat-card>
+                </div>
+
+            </div>
+        </mat-card>
+
+        <mat-card class="right_options">
+            <mat-card-title>Simulation Options</mat-card-title>
+
+            <!-- Selection -->
+            <mat-radio-group [(ngModel)]="simulationMode" class="simulation-radio-group">
+                <mat-radio-button value="tomorrow">Tomorrow</mat-radio-button>
+                <mat-radio-button value="tomorrowAuto">Tomorrow Auto</mat-radio-button>
+                <mat-radio-button value="simulate">Simulate</mat-radio-button>
+            </mat-radio-group>
+
+            <!-- TOMORROW -->
+            <div class="panel-content" *ngIf="simulationMode === 'tomorrow'">
+                <mat-form-field appearance="outline">
+                <mat-label>Current Date</mat-label>
+                <input matInput type="date" [(ngModel)]="tomorrow.currentDate">
+                </mat-form-field>
+            </div>
+
+            <!-- SIMULATE -->
+            <div class="panel-content" *ngIf="simulationMode === 'simulate'">
+                <mat-form-field appearance="outline">
+                <mat-label>Max Days</mat-label>
+                <input matInput type="number" [(ngModel)]="simulate.max_days">
+                </mat-form-field>
+
+                <mat-checkbox [(ngModel)]="simulate.overestimate_ok">
+                Overestimate OK
+                </mat-checkbox>
+            </div>
+        </mat-card>
 </div>

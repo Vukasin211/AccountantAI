@@ -1,12 +1,158 @@
 .parentTest{
     display: flex;
     flex-flow: row;
-    justify-content: center;
+    justify-content: space-between;
 }
 
-.test {
-    border: 2px solid black;
-    width: 30%;
-    height: 660px;
+.left_options {
+    width: 20%;
+    height: auto;  
     margin: 10px;
+    padding:20px;
+    display: flex;
+}
+
+.right_options {
+    width: 20%;
+    margin: 10px;
+    padding:20px;
+    height: 540px;
+}
+
+.title {
+    padding-bottom: 10px;
+}
+
+
+.left_options mat-card-content {
+    display: flex;
+    flex-direction: column; 
+    padding: 0px;
+    margin: 0px;
+}
+
+.custom-button-column {
+  display: flex;
+  flex-direction: column; /* stack vertically */
+  align-items: center;    /* center horizontally */
+  gap: 15px;              /* space between buttons */
+  width: 100%;
+}
+
+.custom-btn {
+  width: 170px;
+  padding: 15px 0;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: bold;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+}
+
+.submit-btn {
+  background-color: #28a745; /* green */
+}
+
+.submit-btn:hover {
+  background-color: #218838; /* darker green */
+  transform: translateY(-2px);
+  box-shadow: 0 6px 8px rgba(0,0,0,0.3);
+}
+
+.submit-btn:active {
+  background-color: #1e7e34;
+  transform: translateY(1px);
+  box-shadow: 0 3px 4px rgba(0,0,0,0.2);
+}
+
+.reset-btn {
+  background-color: #dc3545; /* red */
+}
+
+.reset-btn:hover {
+  background-color: #c82333; /* darker red */
+  transform: translateY(-2px);
+  box-shadow: 0 6px 8px rgba(0,0,0,0.3);
+}
+
+.reset-btn:active {
+  background-color: #bd2130;
+  transform: translateY(1px);
+  box-shadow: 0 3px 4px rgba(0,0,0,0.2);
+}
+
+.simulation-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 10px;
+}
+
+.right_options {
+  width: 25%;
+  align-self: flex-start;
+}
+
+.radio-buttons mat-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.central {
+    width:100%;
+    margin: 10px;
+    align-items: center;
+    height:540px;
+    padding: 20px;
+}
+
+.image-state {
+    font-size: 100px;
+    font-weight: 600;
+}
+
+.image-box {
+    display: flex;
+    text-align: center;
+    justify-content: center;
+    align-items: center;
+}
+
+.day-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.day-card {
+  border-radius: 12px;
+  padding: 10px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.day-card-correct {
+  background-color: #e6f4ea; 
+  border-left: 6px solid #28a745;
+}
+
+.day-card-incorrect {
+  background-color: #fdecea; 
+  border-left: 6px solid #dc3545;
+}
+
+.day-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 10px rgba(0,0,0,0.15);
 }
