@@ -1,0 +1,65 @@
+<div class="main">
+  <mat-card class="options">
+    <mat-card-title>Simulation Options</mat-card-title>
+
+    <div class="options-row">
+      <mat-radio-group [(ngModel)]="simulationMode" class="simulation-radio-group">
+        <mat-radio-button value="tomorrow">Tomorrow</mat-radio-button>
+        <mat-radio-button value="tomorrowAuto">Tomorrow Auto</mat-radio-button>
+        <mat-radio-button value="simulate">Simulate</mat-radio-button>
+      </mat-radio-group>
+
+      <div class="panel-content" *ngIf="simulationMode === 'tomorrow' ">
+        <mat-form-field appearance="outline">
+          <mat-label>Current Date</mat-label>
+          <input matInput type="date" [(ngModel)]="tomorrow.currentDate">
+        </mat-form-field>
+      </div>
+
+      <div class="panel-content" *ngIf="simulationMode === 'simulate'">
+        <mat-form-field appearance="outline">
+          <mat-label>Max Days</mat-label>
+          <input matInput type="number" [(ngModel)]="simulate.max_days">
+        </mat-form-field>
+
+        <mat-checkbox [(ngModel)]="simulate.overestimate_ok">Overestimate OK</mat-checkbox>
+      </div>
+
+      <button class="custom-btn submit-btn" type="submit" (click)="onSubmit()">
+        Submit
+      </button>
+    </div>
+  </mat-card>
+
+  <div class="graphs">
+    <mat-card class="graph_first">
+      <mat-card-title class="title">Prediction Graph 1</mat-card-title>
+      <div class="image-box">
+        <ng-container *ngIf="imageUrl1$ | async as imageUrl; else loading1">
+          <img *ngIf="imageUrl; else noImage1" [src]="imageUrl" style="max-width:100%; height:auto; display:block; margin-bottom:20px;">
+        </ng-container>
+        <ng-template #loading1>
+          <p *ngIf="imageLoading1">Loading...</p>
+        </ng-template>
+        <ng-template #noImage1>
+          <p>No image yet</p>
+        </ng-template>
+      </div>
+    </mat-card>
+
+    <mat-card class="graph_second">
+      <mat-card-title class="title">Prediction Graph 2</mat-card-title>
+      <div class="image-box">
+        <ng-container *ngIf="imageUrl2$ | async as imageUrl; else loading2">
+          <img *ngIf="imageUrl; else noImage2" [src]="imageUrl" style="max-width:100%; height:auto; display:block; margin-bottom:20px;">
+        </ng-container>
+        <ng-template #loading2>
+          <p *ngIf="imageLoading2">Loading...</p>
+        </ng-template>
+        <ng-template #noImage2>
+          <p>No image yet</p>
+        </ng-template>
+      </div>
+    </mat-card>
+  </div>
+</div>

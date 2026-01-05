@@ -1,4 +1,5 @@
 <div class="parentTest">
+    <div class="left">
         <mat-card class="left_options">
             <mat-card-title class = "title">Simulation settings</mat-card-title>
 
@@ -30,30 +31,49 @@
                 {{ isSubmitting ? 'RUNNING...' : 'SUBMIT' }}
                 </button>
                 <button class="custom-btn reset-btn" type="button" (click)="onReset()">RESET</button>
+                <button class="custom-btn blue-btn" type="button" (click)="onCompare()">COMPARE</button>
             </div>
             </mat-card-actions>
         </mat-card>
-        <mat-card class="central">
-            <mat-card-title class ="title">Prediction graph</mat-card-title>
-            <div class="image-box">
-                <ng-container *ngIf="imageUrl$ | async as imageUrl; else imageLoadingOrEmpty">
-                    <img *ngIf="imageUrl; else noImage" [src]="imageUrl" alt="Simulation Image"
-                        style="max-width:100%; height:auto; display:block; margin-bottom:20px;">
-                </ng-container>
+        <mat-card
+        class="error-statistics"
+        *ngIf="simulationErrors$ | async as errors"
+        >
+        <mat-card-title class="title">Error statistics</mat-card-title>
 
-                <ng-template #imageLoadingOrEmpty>
-                    <p *ngIf="isSubmitting; else noImage" class="image-state">Loading...</p>
-                </ng-template>
+        <mat-card-content>
+            <p>MAE: {{ errors.mean_absolute_error | number:'1.2-2' }}</p>
+            <p>RMSE: {{ errors.root_mean_squared_error | number:'1.2-2' }}</p>
+            <p>R²: {{ errors.r_squared | number:'1.3-3' }}</p>
+            <p>MAPE (%): {{ errors.mean_absolute_percentage_error | number:'1.2-2' }}</p>
+            <p>Mean Error: {{ errors.mean_error | number:'1.2-2' }}</p>
+            <p>Median Error: {{ errors.median_error | number:'1.2-2' }}</p>
+            <p>Error Std Dev: {{ errors.error_standard_deviation | number:'1.2-2' }}</p>
+        </mat-card-content>
+        </mat-card>
+    </div>
+        <div class="central">
+            <mat-card class="graph">
+                <mat-card-title class ="title">Prediction graph</mat-card-title>
+                <div class="image-box">
+                    <ng-container *ngIf="imageUrl$ | async as imageUrl; else imageLoadingOrEmpty">
+                        <img *ngIf="imageUrl; else noImage" [src]="imageUrl" alt="Simulation Image"
+                            style="max-width:100%; height:auto; display:block; margin-bottom:20px;">
+                    </ng-container>
 
-                <ng-template #noImage>
-                    <p class="image-state">No image yet</p>
-                </ng-template>
+                    <ng-template #imageLoadingOrEmpty>
+                        <p *ngIf="isSubmitting; else noImage" class="image-state">Loading...</p>
+                    </ng-template>
+
+                    <ng-template #noImage>
+                        <p class="image-state">No image yet</p>
+                    </ng-template>
                 </div>
-
+            </mat-card>
             <!-- Simulation days cards -->
-            <div class="central">
+            <div class="days">
 
-                <p *ngIf="isLoadingDays" class="image-state">
+                <p *ngIf="isLoadingDays" class="days-state">
                     Loading days...
                 </p>
 
@@ -82,9 +102,8 @@
                     </mat-card-content>
                     </mat-card>
                 </div>
-
             </div>
-        </mat-card>
+        </div>
 
         <mat-card class="right_options">
             <mat-card-title>Simulation Options</mat-card-title>

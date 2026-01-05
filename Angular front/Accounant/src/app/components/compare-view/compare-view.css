@@ -1,0 +1,93 @@
+.options {
+    margin: 20px;
+    padding:20px;
+    display: flex;
+}
+
+.options mat-card-content {
+    display: flex;
+    flex-direction: row; 
+    padding: 0px;
+    margin: 0px;
+    width: 100%;
+    
+}
+
+.options-row {
+  display: flex;
+  flex-direction: row; /* horizontal layout */
+  align-items: center; /* vertically align inputs with radios */
+  gap: 20px;
+}
+
+.simulation-radio-group {
+  display: flex;
+  flex-direction: row; /* radios stacked */
+  gap: 10px;
+}
+
+
+.custom-button-column {
+  display: flex;
+  flex-direction: column; /* stack vertically */
+  align-items: center;    /* center horizontally */
+  gap: 15px;              /* space between buttons */
+  width: 100%;
+}
+
+.custom-btn {
+  width: 170px;
+  padding: 15px 0;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: bold;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+}
+
+.submit-btn {
+  background-color: #28a745; /* green */
+}
+
+.submit-btn:hover {
+  background-color: #218838; /* darker green */
+  transform: translateY(-2px);
+  box-shadow: 0 6px 8px rgba(0,0,0,0.3);
+}
+
+.submit-btn:active {
+  background-color: #1e7e34;
+  transform: translateY(1px);
+  box-shadow: 0 3px 4px rgba(0,0,0,0.2);
+}
+
+.graphs {
+  display: flex;               /* horizontal layout */
+  gap: 20px;                   /* space between graphs */
+  margin: 20px;                /* outer margin */
+  flex-wrap: wrap;             /* wrap on small screens */
+  justify-content: center;     /* center if there's extra space */
+}
+
+.graph_first,
+.graph_second {
+  flex: 1 1 45%;               /* each card takes ~45% width, flexible */
+  min-width: 700px;            /* prevents them from shrinking too much */
+
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;      /* ensures padding doesn't break width */
+  min-height:500px;
+}
+
+.graph_first img,
+.graph_second img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}

@@ -13,6 +13,7 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 import { environment } from '../../../environments/environment';
 import { HttpClient } from '@angular/common/http';
 import { finalize, map, Observable, shareReplay, switchMap } from 'rxjs';
+import { Router } from '@angular/router';
 
 @Component({
   selector: 'app-financial-view',
@@ -33,7 +34,7 @@ import { finalize, map, Observable, shareReplay, switchMap } from 'rxjs';
   styleUrl: './financial-view.css',
 })
 export class FinancialView {
-  constructor(private http: HttpClient) {}
+  constructor(private http: HttpClient, private router: Router) {}
 
   selectedModel: 'optimal' | 'single' = 'single';
 
@@ -52,6 +53,7 @@ export class FinancialView {
 
   imageUrl$: Observable<string | null> | null = null;
   simulationDays$: Observable<any> | null = null;
+  simulationErrors$ : Observable<any> | null = null;
   isSubmitting = false;
   isLoadingDays = false;
 
@@ -81,6 +83,10 @@ export class FinancialView {
       this.simulationDays$ = this.http
         .get(`${environment.apiUrl}simulate-json`, { params })
         .pipe(finalize(() => (this.isLoadingDays = false)));
+
+      this.simulationErrors$ = this.simulationDays$.pipe(
+        map((res: any) => res?.error_statistics ?? null)
+      );
     }
     else if (this.selectedModel === 'single' && this.simulationMode === 'simulate') {
       const params = {
@@ -90,20 +96,201 @@ export class FinancialView {
       };
 
       this.isSubmitting = true;
+      this.isLoadingDays = true;
 
+      // IMAGE request
       this.imageUrl$ = this.http
         .post(`${environment.apiUrl}simulateSingle`, null, { params, responseType: 'blob' })
         .pipe(
-          map((blob: Blob) => {
-            this.isSubmitting = false; // done loading
-            if (blob.type.startsWith('image/')) {
-              return URL.createObjectURL(blob);
-            } else {
-              console.error('Received non-image blob');
-              return null;
-            }
-          })
+          map((blob: Blob) =>
+            blob.type.startsWith('image/') ? URL.createObjectURL(blob) : null
+          ),
+          finalize(() => (this.isSubmitting = false)),
+          shareReplay(1)
         );
+
+      // DAYS request (starts immediately)
+      this.simulationDays$ = this.http
+        .get(`${environment.apiUrl}simulate-json-single`, { params })
+        .pipe(finalize(() => (this.isLoadingDays = false)));
+
+       this.simulationErrors$ = this.simulationDays$.pipe(
+          map((res: any) => res?.error_statistics ?? null)
+        ); 
+    }
+    else if (this.selectedModel === 'optimal' && this.simulationMode === 'tomorrowAuto') {
+            const baseParams = {
+        accuracy: (this.accuracyCtrl.value! / 100).toString(),
+      };
+
+      this.isSubmitting = true;
+      this.isLoadingDays = true;
+
+      // IMAGE request
+      this.imageUrl$ = this.http
+        .post(
+          `${environment.apiUrl}simulateTomorrowAuto`,
+          null,
+          {
+            params: { ...baseParams, return_graph: '1' },
+            responseType: 'blob',
+          }
+        )
+        .pipe(
+          map((blob: Blob) =>
+            blob.type.startsWith('image/')
+              ? URL.createObjectURL(blob)
+              : null
+          ),
+          finalize(() => (this.isSubmitting = false)),
+          shareReplay(1)
+        );
+
+      // DAYS request
+      this.simulationDays$ = this.http
+        .post(
+          `${environment.apiUrl}simulateTomorrowAuto`,
+          null,
+          {
+            params: { ...baseParams, return_graph: '0' },
+          }
+        )
+        .pipe(finalize(() => (this.isLoadingDays = false)));
+
+        this.simulationErrors$ = this.simulationDays$.pipe(
+          map((res: any) => res?.error_statistics ?? null)
+        );
+    }
+    else if (this.selectedModel === 'single' && this.simulationMode === 'tomorrowAuto') {
+        const baseParams = {
+        accuracy: (this.accuracyCtrl.value! / 100).toString(),
+      };
+
+      this.isSubmitting = true;
+      this.isLoadingDays = true;
+
+      // IMAGE request
+      this.imageUrl$ = this.http
+        .post(
+          `${environment.apiUrl}simulateTomorrowAutoSingle`,
+          null,
+          {
+            params: { ...baseParams, return_graph: '1' },
+            responseType: 'blob',
+          }
+        )
+        .pipe(
+          map((blob: Blob) =>
+            blob.type.startsWith('image/')
+              ? URL.createObjectURL(blob)
+              : null
+          ),
+          finalize(() => (this.isSubmitting = false)),
+          shareReplay(1)
+        );
+
+      // DAYS request
+      this.simulationDays$ = this.http
+        .post(
+          `${environment.apiUrl}simulateTomorrowAutoSingle`,
+          null,
+          {
+            params: { ...baseParams, return_graph: '0' },
+          }
+        )
+        .pipe(finalize(() => (this.isLoadingDays = false)));
+
+        this.simulationErrors$ = this.simulationDays$.pipe(
+          map((res: any) => res?.error_statistics ?? null)
+        );
+    }
+    else if (this.selectedModel === 'optimal' && this.simulationMode === 'tomorrow') {
+      const baseParams = {
+        currentDateTime: this.tomorrow.currentDate, // ✅ USE USER INPUT
+        accuracy: (this.accuracyCtrl.value! / 100).toString(),
+      };
+
+      this.isSubmitting = true;
+      this.isLoadingDays = true;
+
+      // IMAGE request
+      this.imageUrl$ = this.http
+        .post(
+          `${environment.apiUrl}simulateTomorrow`,
+          null,
+          {
+            params: { ...baseParams, return_graph: '1' },
+            responseType: 'blob',
+          }
+        )
+        .pipe(
+          map((blob: Blob) =>
+            blob.type.startsWith('image/')
+              ? URL.createObjectURL(blob)
+              : null
+          ),
+          finalize(() => (this.isSubmitting = false)),
+          shareReplay(1)
+        );
+
+      // DAYS request
+      this.simulationDays$ = this.http
+        .post(
+          `${environment.apiUrl}simulateTomorrow`,
+          null,
+          {
+            params: { ...baseParams, return_graph: '0' },
+          }
+        )
+        .pipe(finalize(() => (this.isLoadingDays = false)));
+
+        this.simulationErrors$ = this.simulationDays$.pipe(
+          map((res: any) => res?.error_statistics ?? null)
+        );
+    }
+    else if (this.selectedModel === 'single' && this.simulationMode === 'tomorrow') {
+              const baseParams = {
+          currentDateTime: this.tomorrow.currentDate, 
+          accuracy: (this.accuracyCtrl.value! / 100).toString(),
+        };
+
+        this.isSubmitting = true;
+        this.isLoadingDays = true;
+
+        // IMAGE request
+        this.imageUrl$ = this.http
+          .post(
+            `${environment.apiUrl}simulateTomorrowSingle`,
+            null,
+            {
+              params: { ...baseParams, return_graph: '1' },
+              responseType: 'blob',
+            }
+          )
+          .pipe(
+            map((blob: Blob) =>
+              blob.type.startsWith('image/')
+                ? URL.createObjectURL(blob)
+                : null
+            ),
+            finalize(() => (this.isSubmitting = false)),
+            shareReplay(1)
+          );
+
+        // DAYS request
+        this.simulationDays$ = this.http
+          .post(
+            `${environment.apiUrl}simulateTomorrowSingle`,
+            null,
+            {
+              params: { ...baseParams, return_graph: '0' },
+            }
+          )
+          .pipe(finalize(() => (this.isLoadingDays = false)));
+
+          this.simulationErrors$ = this.simulationDays$.pipe(
+            map((res: any) => res?.error_statistics ?? null)
+          );
     }
   }
 
@@ -117,6 +304,10 @@ export class FinancialView {
     this.isSubmitting = false;
     this.simulationDays$ = null;
     this.isLoadingDays = false;
+    this.simulationErrors$ = null;
   }
-
+  
+  onCompare() {
+    this.router.navigate(['/compare']);
+  }
 }
